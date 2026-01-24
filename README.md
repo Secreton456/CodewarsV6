@@ -1,1 +1,0 @@
-# CodeWars_Version_6
