@@ -39,7 +39,6 @@ class Server:
 
     def setup_game(self):
         self.player_count = 0
-        self.load_map("wncc2")
         # world_data columns (per row):
         # 0:is_alive, 1:x, 2:y, 3:theta, 4:v, 5:omega_or_traveled, 6:fuel, 7:health_or_damage, 8:score, 9:owner_id
         # for tanks: column 6 = fuel, 7 = health, 8 = score
@@ -88,12 +87,14 @@ class Server:
         self.player_fire_cooldown = np.zeros(8, dtype=np.int32)
         
         # Collision map system - grid-based obstacles
-        self.GRID_SIZE = 20  # each cell is 20x20 pixels
-        self.GRID_W = self.SCREEN_W // self.GRID_SIZE  # 40 cells wide
-        self.GRID_H = self.SCREEN_H // self.GRID_SIZE  # 30 cells tall
+        self.GRID_SIZE = 10  # each cell is 10x10 pixels (matches map editor)
         
-        # Load map from file or create default
+        # Load map from file - this will set GRID_W, GRID_H, and collision_map
+        self.load_map("catacombs")
         
+        # Update screen dimensions based on loaded map
+        self.SCREEN_W = self.GRID_W * self.GRID_SIZE
+        self.SCREEN_H = self.GRID_H * self.GRID_SIZE
         
         # Convert map to bytes for transmission
         self.collision_map_bytes = self.collision_map.tobytes()
@@ -105,20 +106,30 @@ class Server:
         if os.path.exists(map_path):
             try:
                 self.collision_map = np.load(map_path)
-                print(f"[SERVER] Loaded map: {map_name}")
+                # Extract dimensions from loaded map
+                self.GRID_H, self.GRID_W = self.collision_map.shape
+                print(f"[SERVER] Loaded map: {map_name} (dimensions: {self.GRID_W}x{self.GRID_H})")
                 return True
             except Exception as e:
                 print(f"[SERVER] Error loading map {map_name}: {e}")
         
         # Create default map if file not found
         print(f"[SERVER] Map '{map_name}' not found, creating default map")
+        # Use default dimensions if not already set
+        if not hasattr(self, 'GRID_W'):
+            self.GRID_W = 80
+            self.GRID_H = 60
+        
         self.collision_map = np.ones((self.GRID_H, self.GRID_W), dtype=np.int32)
         
         # Simple default layout
         self.collision_map[-1, :] = 0  # Ground floor
-        self.collision_map[20, 5:15] = 0  # Left platform
-        self.collision_map[15, 25:35] = 0  # Right platform
-        self.collision_map[10, 10:20] = 0  # Top platform
+        if self.GRID_H > 20:
+            self.collision_map[20, 5:min(15, self.GRID_W)] = 0  # Left platform
+        if self.GRID_H > 15:
+            self.collision_map[15, 25:min(35, self.GRID_W)] = 0  # Right platform
+        if self.GRID_H > 10:
+            self.collision_map[10, 10:min(20, self.GRID_W)] = 0  # Top platform
         
         return False
     
