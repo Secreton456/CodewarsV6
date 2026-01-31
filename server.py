@@ -7,7 +7,7 @@ import os
 from copy import deepcopy
 from scripts.guns.guns import Gun, GUN_DATA
 
-guns=[[Gun(**data) for data in GUN_DATA]]
+guns=[Gun(**data) for data in GUN_DATA]
 
 class Server:
     def __init__(self):
@@ -25,7 +25,7 @@ class Server:
     def _start_server(self, PORT):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        SERVER_IP = "0.0.0.0"   # 👈 listen on ALL interfaces
+        SERVER_IP = "0.0.0.0" 
         try:
             self.server_socket.bind((SERVER_IP, PORT))
         except socket.error as e:
@@ -221,7 +221,7 @@ class Server:
                 if self.world_data[i, 0] == 0:
                     continue
                 
-                if self.player_inputs[i, 7] == 1 and self.player_fuel[i] > 0:
+                if self.player_inputs[i, 0] == 1 and self.player_fuel[i] > 0:
                     # Apply upward thrust
                     self.player_vy[i] -= self.JETPACK_THRUST
                     # Consume fuel
@@ -309,27 +309,27 @@ class Server:
             dt = 1 / 60.0
 
             for pid in range(8):
-               if self.world_data[pid, 0] == 0:
-                   continue
-            gun = self.player_guns[pid]
-            if gun is None:
-                continue
+                if self.world_data[pid, 0] == 0:
+                    continue
+                gun = self.player_guns[pid]
+                if gun is None:
+                    continue
 
-            # update gun cooldown
-            gun.update(dt)
+                # update gun cooldown
+                gun.update(dt)
 
-    # client intent: SPACE
-            if self.player_inputs[pid, 7] != 1:
-                continue
+                # client intent: SPACE
+                if self.player_inputs[pid, 7] != 1:
+                    continue
 
-            bullets = gun.shoot(
-                 self.world_data[pid, 1],  # x
-                 self.world_data[pid, 2],  # y
-                 self.world_data[pid, 3]   # angle
-                 )
+                bullets = gun.shoot(
+                     self.world_data[pid, 1],  # x
+                     self.world_data[pid, 2],  # y
+                     self.world_data[pid, 3]   # angle
+                     )
 
-            for bullet in bullets:
-                self._spawn_bullet(pid, bullet)
+                for bullet in bullets:
+                    self._spawn_bullet(pid, bullet)
 
 
             # detect collisions

@@ -61,7 +61,7 @@ class PlayerClient:
     def load_sprites(self):
         # Placeholder player body
         self.player_img = pygame.Surface((25, 25), pygame.SRCALPHA)
-        pygame.draw.circle(self.player_img, (200, 200, 255), (12, 12), 12)
+        pygame.draw.circle(self.player_img, (100, 150, 255), (12, 12), 7)
 
         self.gun_sprites = {}
         for i, data in enumerate(GUN_DATA):
@@ -79,7 +79,7 @@ class PlayerClient:
         self.screen.blit(self.player_img, body_rect)
 
         gun_img = self.gun_sprites.get(gun_id)
-        gun_img= pygame.transform.smoothscale(gun_img,(40,20))
+        gun_img= pygame.transform.smoothscale(gun_img,(20,10))
         if gun_img is None:
             return
 
@@ -95,7 +95,7 @@ class PlayerClient:
 
         # local player indicator
         if is_local:
-            pygame.draw.circle(self.screen, (0, 0, 255), (int(x), int(y)), 14, 2)
+            pygame.draw.circle(self.screen, (0, 0, 255), (int(x), int(y)), 7, )
 
     # ------------------------------------
     # GAME LOOP
