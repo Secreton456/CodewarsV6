@@ -296,8 +296,12 @@ class Server:
             
             # Update ammo in world_data for current gun
             current_gun = self.player_inventories[i].get_current_gun()
-            self.world_data[i, 9] = current_gun.current_ammo
-            self.world_data[i, 10] = current_gun.total_ammo
+            if current_gun is not None:
+                self.world_data[i, 9] = current_gun.current_ammo
+                self.world_data[i, 10] = current_gun.total_ammo
+            else:
+                self.world_data[i, 9] = 0
+                self.world_data[i, 10] = 0
         
         # Gas effects data: [[x, y, radius, duration], ...] for all active gas zones
         gas_data = np.array([
@@ -557,6 +561,8 @@ class Server:
                     continue
                 if self.player_inputs[i, 8] == 1:  # R key pressed
                     weapon = self.player_inventories[i].get_current_gun()
+                    if weapon is None:
+                        continue
                     # Only start reload if not already reloading and if reload is needed
                     if self.player_reload_cooldown[i] <= 0 and weapon.current_ammo < weapon.magazine_capacity and weapon.total_ammo > 0:
                         self.player_reload_cooldown[i] = weapon.reload_time
@@ -786,12 +792,16 @@ class Server:
                         # Reload is complete
                         self.player_reload_cooldown[i] = 0
                         weapon = self.player_inventories[i].get_current_gun()
-                        weapon.reload()
+                        if weapon is not None:
+                            weapon.reload()
 
             # create bullets (space = index 7)
             shooting_id = np.where(self.player_inputs[:, 7] == 1)[0]
             for idx in shooting_id:
                 weapon = self.player_inventories[idx].get_current_gun()
+                
+                if weapon is None:
+                    continue
                 
                 # Check if currently reloading
                 if self.player_reload_cooldown[idx] > 0:
@@ -923,8 +933,13 @@ class Server:
             for i in range(8):
                 if self.world_data[i, 0] == 1:
                     current_gun = self.player_inventories[i].get_current_gun()
-                    self.world_data[i, 9] = current_gun.current_ammo
-                    self.world_data[i, 10] = current_gun.total_ammo
+                    if current_gun is not None:
+                        self.world_data[i, 9] = current_gun.current_ammo
+                        self.world_data[i, 10] = current_gun.total_ammo
+                    else:
+                        # Player has no gun - set ammo to 0
+                        self.world_data[i, 9] = 0
+                        self.world_data[i, 10] = 0
             
             # Handle grenade type cycling (C key = input 11) on rising edge
             for idx in range(8):
