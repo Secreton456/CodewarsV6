@@ -13,7 +13,7 @@ SERVER_HOST = "192.168.56.1"  # Change to your server IP
 # MAP SETTINGS
 # =============================================================================
 DEFAULT_MAP = "catacombs"
-GRID_SIZE = 10  # Each grid cell is 10x10 pixels
+GRID_SIZE = 16  # Each grid cell is 16x16 pixels
 
 # =============================================================================
 # PLAYER/TANK SETTINGS

@@ -2,6 +2,7 @@ import pygame
 import threading
 import importlib
 import numpy as np
+import os
 from client import Network
 import time
 from weapons import WEAPONS, get_grenade
@@ -20,6 +21,7 @@ class PlayerClient:
             self.screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
             pygame.display.set_caption("PyTanks")
             self.font = pygame.font.SysFont(None, 24)
+            self.hud_font = pygame.font.SysFont(None, 38)
 
         self.name = script_name if script_name is not None else "Keyboard"
         self.join_server()
@@ -32,9 +34,13 @@ class PlayerClient:
 
         # ---- Rendering-only resources ----
         if self.render_enabled:
-            map_width = self.grid_w * self.grid_size
-            map_height = self.grid_h * self.grid_size
-            self.screen = pygame.display.set_mode((map_width, map_height), pygame.RESIZABLE)
+            self.map_width = self.grid_w * self.grid_size
+            self.map_height = self.grid_h * self.grid_size
+            self.world_surface = pygame.Surface((self.map_width, self.map_height)).convert()
+            self.map_background = self._load_map_background()
+
+            initial_w, initial_h = self._compute_initial_window_size()
+            self.screen = pygame.display.set_mode((initial_w, initial_h), pygame.RESIZABLE)
 
             # Load player sprite frames for animation
             self.player_frames = [
@@ -100,6 +106,23 @@ class PlayerClient:
         }
         return offsets.get(weapon_id, (0, 0))
 
+    def _load_map_background(self):
+        """Load and scale the map background image to match world dimensions."""
+        bg_candidates = [
+            os.path.join("assets", "catacombs final.png"),
+            os.path.join("assets", "catacomb_final.png"),
+        ]
+
+        for bg_path in bg_candidates:
+            if os.path.exists(bg_path):
+                try:
+                    bg = pygame.image.load(bg_path).convert()
+                    return pygame.transform.smoothscale(bg, (self.map_width, self.map_height))
+                except pygame.error:
+                    continue
+
+        return None
+
     def run_game(self):
 
         if self.render_enabled:
@@ -120,6 +143,8 @@ class PlayerClient:
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         self.running = False
+                    elif event.type == pygame.VIDEORESIZE:
+                        self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
 
             result = self.server.send(keyboard_input)
 
@@ -233,18 +258,14 @@ class PlayerClient:
                 self.render(game_world, gun_spawns, gas_data, grenade_data)
 
     def render(self, game_world, gun_spawns, gas_data, grenade_data):
-        # Brown background (open space)
-        self.screen.fill(config.BACKGROUND_COLOR)
-        
-        # Draw collision map obstacles (light brown/yellowish blocks)
-        for gy in range(self.grid_h):
-            for gx in range(self.grid_w):
-                if self.collision_map[gy, gx] == 0:  # obstacle
-                    x = gx * self.grid_size
-                    y = gy * self.grid_size
-                    pygame.draw.rect(self.screen, config.OBSTACLE_COLOR, (x, y, self.grid_size, self.grid_size))
-                    # Add darker border for visibility
-                    pygame.draw.rect(self.screen, config.OBSTACLE_BORDER_COLOR, (x, y, self.grid_size, self.grid_size), 1)
+        display_surface = self.screen
+        self.screen = self.world_surface
+
+        # Draw map art as background; collisions still come from collision_map on server.
+        if self.map_background is not None:
+            self.screen.blit(self.map_background, (0, 0))
+        else:
+            self.screen.fill(config.BACKGROUND_COLOR)
         
         # Draw gun spawns with actual gun images
         for spawn in gun_spawns:
@@ -351,7 +372,7 @@ class PlayerClient:
             fuel_percent = fuel / 100.0
             # Draw fuel bar in top-left corner
             bar_x, bar_y = 10, 10
-            bar_width, bar_height = 200, 20
+            bar_width, bar_height = 620, 52
             # Background (empty)
             pygame.draw.rect(self.screen, (50, 50, 50), (bar_x, bar_y, bar_width, bar_height))
             # Fuel level (cyan color like Mini Militia)
@@ -363,8 +384,8 @@ class PlayerClient:
             # Draw health bar below fuel
             health = game_world[self.ID, 7]
             health_percent = max(0.0, min(1.0, health / 200.0))
-            hbar_x, hbar_y = 10, 40
-            hbar_w, hbar_h = 200, 20
+            hbar_x, hbar_y = 10, bar_y + bar_height + 10
+            hbar_w, hbar_h = 620, 52
             pygame.draw.rect(self.screen, (50, 50, 50), (hbar_x, hbar_y, hbar_w, hbar_h))
             pygame.draw.rect(self.screen, (255, 0, 0), (hbar_x, hbar_y, int(hbar_w * health_percent), hbar_h))
             pygame.draw.rect(self.screen, (255, 255, 255), (hbar_x, hbar_y, hbar_w, hbar_h), 2)
@@ -377,11 +398,13 @@ class PlayerClient:
             
             # Draw weapon name and ammo counter
             weapon = self.player_weapons[self.ID]
-            weapon_name_surf = self.font.render(weapon.name, True, (255, 255, 255))
-            self.screen.blit(weapon_name_surf, (10, 70))
-            self.weapon_renderer.draw_ammo_counter(self.screen, weapon, 10, 95, self.font)
+            weapon_name_y = hbar_y + hbar_h + 12
+            weapon_name_surf = self.hud_font.render(weapon.name, True, (255, 255, 255))
+            self.screen.blit(weapon_name_surf, (10, weapon_name_y))
+            ammo_y = weapon_name_y + 36
+            self.weapon_renderer.draw_ammo_counter(self.screen, weapon, 10, ammo_y, self.hud_font)
             # Draw grenade counter
-            self.weapon_renderer.draw_grenade_counter(self.screen, grenade_data, self.ID, 10, 120, self.font)
+            self.weapon_renderer.draw_grenade_counter(self.screen, grenade_data, self.ID, 10, ammo_y + 36, self.hud_font)
         
         # Draw bullets with trails (Mini Militia style)
         for i in range(8, 48):
@@ -451,7 +474,33 @@ class PlayerClient:
 
         # Draw visual effects (muzzle flashes and impacts)
         self.effects_manager.draw(self.screen)
-        
+
+        self._present_frame(display_surface)
+        self.screen = display_surface
+
+    def _compute_initial_window_size(self):
+        display_info = pygame.display.Info()
+        desktop_w = max(800, display_info.current_w)
+        desktop_h = max(600, display_info.current_h - 80)
+        return min(self.map_width, desktop_w), min(self.map_height, desktop_h)
+
+    def _present_frame(self, display_surface):
+        window_w, window_h = display_surface.get_size()
+
+        if window_w <= 0 or window_h <= 0:
+            return
+
+        scale = min(window_w / self.map_width, window_h / self.map_height)
+        scaled_w = max(1, int(self.map_width * scale))
+        scaled_h = max(1, int(self.map_height * scale))
+
+        # Letterbox the full map so it always fits inside the window.
+        viewport = pygame.transform.smoothscale(self.world_surface, (scaled_w, scaled_h))
+        offset_x = (window_w - scaled_w) // 2
+        offset_y = (window_h - scaled_h) // 2
+
+        display_surface.fill((0, 0, 0))
+        display_surface.blit(viewport, (offset_x, offset_y))
         pygame.display.update()
 
 

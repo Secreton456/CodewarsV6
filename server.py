@@ -129,6 +129,7 @@ class Server:
         self.world_data[8:, 4] = BULLET_V
         # per-player vertical velocity for gravity (tanks only)
         self.player_vy = np.zeros(8, dtype=np.float64)
+        self.player_stuck_frames = np.zeros(8, dtype=np.int32)
         # screen and tank constants for ground handling
         self.SCREEN_W = 800
         self.SCREEN_H = 600
@@ -182,9 +183,60 @@ class Server:
         # Update screen dimensions based on loaded map
         self.SCREEN_W = self.GRID_W * self.GRID_SIZE
         self.SCREEN_H = self.GRID_H * self.GRID_SIZE
+        self.GROUND_Y = self.SCREEN_H - self.COLLISION_RADIUS
+
+        # Build safe spawn positions from map geometry so players never spawn outside terrain.
+        self._rebuild_spawn_candidates()
         
         # Convert map to bytes for transmission
         self.collision_map_bytes = self.collision_map.tobytes()
+
+    def _rebuild_spawn_candidates(self):
+        """Collect valid standable points from map collision tiles."""
+        self.spawn_candidates = []
+
+        min_x = self.TANK_RADIUS
+        max_x = self.SCREEN_W - self.TANK_RADIUS
+        min_y = self.TANK_RADIUS
+        max_y = self.SCREEN_H - self.COLLISION_RADIUS
+
+        for gy in range(1, self.GRID_H):
+            for gx in range(self.GRID_W):
+                # 0 = obstacle/floor tile, 1 = passable tile
+                if self.collision_map[gy, gx] != 0:
+                    continue
+                if self.collision_map[gy - 1, gx] != 1:
+                    continue
+
+                x = gx * self.GRID_SIZE + (self.GRID_SIZE // 2)
+                y = gy * self.GRID_SIZE - self.COLLISION_RADIUS
+
+                if x < min_x or x > max_x or y < min_y or y > max_y:
+                    continue
+
+                if not self.is_colliding_with_obstacle(x, y, self.COLLISION_RADIUS):
+                    self.spawn_candidates.append((float(x), float(y)))
+
+    def _get_safe_spawn_position(self):
+        """Return a safe spawn point inside map bounds and away from solid tiles."""
+        if getattr(self, 'spawn_candidates', None):
+            idx = np.random.randint(0, len(self.spawn_candidates))
+            return self.spawn_candidates[idx]
+
+        min_x = int(np.ceil(self.TANK_RADIUS))
+        max_x = int(np.floor(self.SCREEN_W - self.TANK_RADIUS))
+
+        if max_x <= min_x:
+            return float(self.SCREEN_W // 2), float(max(self.TANK_RADIUS, self.SCREEN_H - self.COLLISION_RADIUS))
+
+        for _ in range(64):
+            spawn_x = float(np.random.randint(min_x, max_x + 1))
+            spawn_y = float(self.find_ground_below(spawn_x, 0))
+            spawn_y = float(np.clip(spawn_y, self.TANK_RADIUS, self.SCREEN_H - self.COLLISION_RADIUS))
+            if not self.is_colliding_with_obstacle(spawn_x, spawn_y, self.COLLISION_RADIUS):
+                return spawn_x, spawn_y
+
+        return float(self.SCREEN_W // 2), float(np.clip(self.GROUND_Y, self.TANK_RADIUS, self.SCREEN_H - self.COLLISION_RADIUS))
 
     def load_map(self, map_name):
         """Load map from maps/ folder or create default if not found"""
@@ -335,6 +387,37 @@ class Server:
         self.world_data[grenade_slot, 2] = y
         self.world_data[grenade_slot, 4] = vx
         self.world_data[grenade_slot, 5] = vy
+
+    def _update_non_bouncy_grenade(self, grenade_slot, radius=4.0):
+        """Stepwise movement without bounce; grenade stops on first collision."""
+        x = self.world_data[grenade_slot, 1]
+        y = self.world_data[grenade_slot, 2]
+        vx = self.world_data[grenade_slot, 4]
+        vy = self.world_data[grenade_slot, 5]
+
+        steps = max(1, int(np.ceil(max(abs(vx), abs(vy), 1.0))))
+        dx = vx / steps
+        dy = vy / steps
+
+        for _ in range(steps):
+            next_x = x + dx
+            next_y = y + dy
+            if self.is_colliding_with_obstacle(next_x, next_y, radius):
+                # Keep grenade just outside geometry and fully stop it.
+                x, y = self._push_out_of_obstacle(x, y, radius, push_x=-np.sign(dx), push_y=-np.sign(dy if dy != 0 else 1.0))
+                vx = 0.0
+                vy = 0.0
+                break
+            x = next_x
+            y = next_y
+
+        x = float(np.clip(x, radius, self.SCREEN_W - radius))
+        y = float(np.clip(y, radius, self.SCREEN_H - radius))
+
+        self.world_data[grenade_slot, 1] = x
+        self.world_data[grenade_slot, 2] = y
+        self.world_data[grenade_slot, 4] = vx
+        self.world_data[grenade_slot, 5] = vy
     
     def find_ground_below(self, x, y):
         """Find the y-coordinate of the first obstacle below position (x, y)"""
@@ -448,7 +531,10 @@ class Server:
                     grenade_type = int(self.world_data[g, 10])
                     blast_radius = self.world_data[g, 6]
                     damage = self.world_data[g, 7]
-                    self._update_bouncy_grenade(g, radius=4.0)
+                    if grenade_type == 2:
+                        self._update_non_bouncy_grenade(g, radius=4.0)
+                    else:
+                        self._update_bouncy_grenade(g, radius=4.0)
                     gx, gy = self.world_data[g, 1], self.world_data[g, 2]
 
                     if grenade_type == 1:      # normal timed grenade with bounce physics
@@ -576,11 +662,8 @@ class Server:
                 currently_colliding = self.is_colliding_with_obstacle(old_x, self.world_data[i, 2], self.COLLISION_RADIUS)
                 will_collide = self.is_colliding_with_obstacle(new_x, self.world_data[i, 2], self.COLLISION_RADIUS)
                 
-                # Allow movement if: not colliding after, OR currently stuck and trying to move away
-                if not will_collide or (currently_colliding and not will_collide):
-                    self.world_data[i, 1] = new_x
-                elif currently_colliding:
-                    # Already stuck, allow any movement to try to escape
+                # Only accept horizontal movement when destination is non-colliding.
+                if not will_collide:
                     self.world_data[i, 1] = new_x
             
             # Aim control using all 4 arrow keys for continuous rotation
@@ -660,8 +743,8 @@ class Server:
                     currently_colliding = self.is_colliding_with_obstacle(self.world_data[i, 1], old_y, self.COLLISION_RADIUS)
                     will_collide = self.is_colliding_with_obstacle(self.world_data[i, 1], new_y, self.COLLISION_RADIUS)
                     
-                    if not will_collide or currently_colliding:
-                        # Allow upward movement if not colliding or already stuck
+                    if not will_collide:
+                        # Only allow upward movement into free space.
                         self.world_data[i, 2] = new_y
                     else:
                         self.player_vy[i] = 0
@@ -669,7 +752,38 @@ class Server:
             # clamp horizontal position to screen
             self.world_data[:8, 1] = np.clip(self.world_data[:8, 1], self.TANK_RADIUS, self.SCREEN_W - self.TANK_RADIUS)
             # clamp vertical position to prevent going too far up
-            self.world_data[:8, 2] = np.clip(self.world_data[:8, 2], self.TANK_RADIUS, self.SCREEN_H)
+            self.world_data[:8, 2] = np.clip(self.world_data[:8, 2], self.TANK_RADIUS, self.SCREEN_H - self.COLLISION_RADIUS)
+
+            # Resolve any tank that is still embedded in terrain.
+            for i in range(8):
+                if self.world_data[i, 0] == 0:
+                    continue
+
+                x = self.world_data[i, 1]
+                y = self.world_data[i, 2]
+                if not self.is_colliding_with_obstacle(x, y, self.COLLISION_RADIUS):
+                    self.player_stuck_frames[i] = 0
+                    continue
+
+                # Try a local push-out first to preserve nearby position.
+                push_x = horizontal_move[i]
+                push_y = -1.0 if self.player_vy[i] >= 0 else self.player_vy[i]
+                x, y = self._push_out_of_obstacle(x, y, self.COLLISION_RADIUS, push_x=push_x, push_y=push_y)
+                x = float(np.clip(x, self.TANK_RADIUS, self.SCREEN_W - self.TANK_RADIUS))
+                y = float(np.clip(y, self.TANK_RADIUS, self.SCREEN_H - self.COLLISION_RADIUS))
+                self.world_data[i, 1] = x
+                self.world_data[i, 2] = y
+
+                if self.is_colliding_with_obstacle(x, y, self.COLLISION_RADIUS):
+                    self.player_stuck_frames[i] += 1
+                    if self.player_stuck_frames[i] > 10:
+                        spawn_x, spawn_y = self._get_safe_spawn_position()
+                        self.world_data[i, 1] = spawn_x
+                        self.world_data[i, 2] = spawn_y
+                        self.player_vy[i] = 0
+                        self.player_stuck_frames[i] = 0
+                else:
+                    self.player_stuck_frames[i] = 0
 
             # Store bullet old positions before movement for interpolated collision detection
             bullet_old_positions = np.zeros((40, 2), dtype=np.float64)  # 40 bullets, (x, y)
@@ -1016,16 +1130,16 @@ class Server:
             self.player_respawn_cooldown[tank_index] = delay
             self.world_data[tank_index, 0] = 0  # mark as dead during respawn delay
             return
-        
-        spawn_x = np.random.randint(self.TANK_RADIUS, self.SCREEN_W - self.TANK_RADIUS)
-        # Start from top and find first valid ground
-        ground_y = self.find_ground_below(spawn_x, 0)
+
+        spawn_x, spawn_y = self._get_safe_spawn_position()
         self.world_data[tank_index, 1] = spawn_x
-        self.world_data[tank_index, 2] = ground_y
+        self.world_data[tank_index, 2] = spawn_y
         self.world_data[tank_index, 0] = 1  # mark as alive
         # reset vertical velocity
         if hasattr(self, 'player_vy'):
             self.player_vy[tank_index] = 0
+        if hasattr(self, 'player_stuck_frames'):
+            self.player_stuck_frames[tank_index] = 0
         # reset fuel to full
         if hasattr(self, 'player_fuel'):
             self.player_fuel[tank_index] = self.MAX_FUEL
