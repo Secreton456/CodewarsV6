@@ -38,6 +38,7 @@ class PlayerClient:
             self.map_height = self.grid_h * self.grid_size
             self.world_surface = pygame.Surface((self.map_width, self.map_height)).convert()
             self.map_background = self._load_map_background()
+            self.gas_cloud_sprite = self._create_gas_cloud_sprite(256)
 
             initial_w, initial_h = self._compute_initial_window_size()
             self.screen = pygame.display.set_mode((initial_w, initial_h), pygame.RESIZABLE)
@@ -70,6 +71,7 @@ class PlayerClient:
             self.prev_shooting = np.zeros(8, dtype=bool)
             self.prev_bullets = {}
             self.prev_ammo = {}
+            self.prev_grenades = {}
 
         self.run_game()
 
@@ -122,6 +124,60 @@ class PlayerClient:
                     continue
 
         return None
+
+    def _create_gas_cloud_sprite(self, size=256):
+        """Create a soft, foggy gas cloud sprite procedurally (no PNG dependency)."""
+        sprite = pygame.Surface((size, size), pygame.SRCALPHA)
+        center = size // 2
+
+        # Layer many translucent circles to create a blurred cloud look.
+        for _ in range(180):
+            angle = np.random.uniform(0, 2 * np.pi)
+            distance = np.random.uniform(0, size * 0.28)
+            cx = int(center + np.cos(angle) * distance)
+            cy = int(center + np.sin(angle) * distance)
+            r = int(np.random.uniform(size * 0.07, size * 0.18))
+
+            # Slight color variation gives a natural toxic cloud feel.
+            g = int(np.random.uniform(175, 235))
+            color = (
+                int(np.random.uniform(70, 120)),
+                g,
+                int(np.random.uniform(50, 95)),
+                int(np.random.uniform(40, 95)),
+            )
+            pygame.draw.circle(sprite, color, (cx, cy), max(2, r))
+
+        # Green center glow (avoid white-looking core).
+        pygame.draw.circle(sprite, (70, 220, 95, 120), (center, center), int(size * 0.23))
+        pygame.draw.circle(sprite, (40, 180, 70, 90), (center, center), int(size * 0.16))
+        return sprite
+
+    def _draw_gas_cloud(self, ex, ey, radius, time_factor):
+        """Draw animated layered gas cloud from the procedural sprite."""
+        if self.gas_cloud_sprite is None:
+            return
+
+        diameter = max(4, int(radius * 2))
+        main = pygame.transform.smoothscale(self.gas_cloud_sprite, (diameter, diameter))
+
+        pulse = 0.92 + 0.08 * np.sin(time_factor * 0.004)
+        pulse_d = max(4, int(diameter * pulse))
+        pulse_layer = pygame.transform.smoothscale(self.gas_cloud_sprite, (pulse_d, pulse_d))
+
+        drift = max(1, int(radius * 0.08))
+        ox = int(np.cos(time_factor * 0.002) * drift)
+        oy = int(np.sin(time_factor * 0.0027) * drift)
+
+        main.set_alpha(185)
+        pulse_layer.set_alpha(145)
+
+        main_rect = main.get_rect(center=(int(ex), int(ey)))
+        pulse_rect = pulse_layer.get_rect(center=(int(ex + ox), int(ey + oy)))
+        self.screen.blit(main, main_rect.topleft)
+        self.screen.blit(pulse_layer, pulse_rect.topleft)
+
+        # Intentionally no ring/outline; cloud-only visual.
 
     def run_game(self):
 
@@ -253,6 +309,18 @@ class PlayerClient:
                             self.effects_manager.add_impact_effect(prev_x, prev_y, weapon_id)
                 
                 self.prev_bullets = active_bullets
+
+                # Detect grenade explosions (grenade slot disappeared this frame)
+                active_grenades = {}
+                for g in range(48, 55):
+                    if game_world[g, 0] == 1:
+                        active_grenades[g] = (game_world[g, 1], game_world[g, 2], int(game_world[g, 10]))
+
+                for g_id, (prev_x, prev_y, grenade_type) in self.prev_grenades.items():
+                    if g_id not in active_grenades:
+                        self.effects_manager.add_grenade_explosion(prev_x, prev_y, grenade_type)
+
+                self.prev_grenades = active_grenades
             
             if self.render_enabled:
                 self.render(game_world, gun_spawns, gas_data, grenade_data)
@@ -465,12 +533,9 @@ class PlayerClient:
             if len(effect) >= 4:
                 ex, ey, radius, duration = effect
                 if duration > 0:
-                    # Draw semi-transparent green circle for gas
-                    gas_surface = pygame.Surface((int(radius * 2), int(radius * 2)), pygame.SRCALPHA)
-                    pygame.draw.circle(gas_surface, (0, 255, 0, 50), (int(radius), int(radius)), int(radius))
-                    self.screen.blit(gas_surface, (int(ex - radius), int(ey - radius)))
-                    # Draw border
-                    pygame.draw.circle(self.screen, (0, 200, 0, 150), (int(ex), int(ey)), int(radius), 2)
+                    time_factor = time.time() * 1000
+                    self._draw_gas_cloud(ex, ey, radius, time_factor)
+                    
 
         # Draw visual effects (muzzle flashes and impacts)
         self.effects_manager.draw(self.screen)
