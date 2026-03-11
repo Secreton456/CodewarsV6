@@ -4,8 +4,9 @@ import time
 import numpy as np
 import pygame
 import os
-from weapons import WEAPONS, get_weapon
-from gun_spawner import GunSpawner, PlayerInventory
+from engine.weapons.weapons import WEAPONS, get_weapon
+from engine.spawners.gun_spawner import GunSpawner, PlayerInventory
+from engine.spawners.medkit_spawner import MedkitSpawner
 import config
 
 class Server:
@@ -32,7 +33,7 @@ class Server:
         - throw_angle: float, angle in radians
         - throw_power: float, initial speed
         """
-        from weapons import get_grenade
+        from engine.weapons.weapons import get_grenade
         # Find a free grenade slot (rows 48-54)
         for i in range(48, 55):
             if self.world_data[i, 0] == 0:
@@ -103,16 +104,22 @@ class Server:
         return True
 
     def setup_game(self):
+        self.match_ended = False
+        self.match_start_time = None
+        self.match_duration = config.MATCH_DURATION
+        self.player_names = [""] * 8
         # Grenade cooldown per player (seconds)
         self.player_grenade_cooldown = np.zeros(8, dtype=np.float64)
         self.player_respawn_cooldown = np.zeros(8, dtype=np.float64)
         self.player_count = 0
+        # [kills, deaths] per player. K/D delta is computed as kills - deaths.
+        self.player_stats = np.zeros((8, 2), dtype=np.int32)
         # world_data columns (per row):
         # 0:is_alive, 1:x, 2:y, 3:theta, 4:v, 5:omega_or_traveled, 6:fuel, 7:health_or_damage, 8:score, 9:current_ammo, 10:total_ammo_or_weapon_id
         # for tanks: column 6 = fuel, 7 = health, 8 = score, 9 = current_ammo, 10 = total_ammo
         # for bullets: column 5 = distance traveled, 7 = snapshot damage, 9 = owner id, 10 = weapon id
         self.world_data = np.zeros((55, 11), dtype=np.float64)
-        self.player_inputs = np.zeros((8, 12), dtype=np.int32)  # 12 inputs: W,A,D,UP,DOWN,LEFT,RIGHT,SPACE,R,S,G,C
+        self.player_inputs = np.zeros((8, 14), dtype=np.int32)  # inputs: W,A,D,UP,DOWN,LEFT,RIGHT,SPACE,R,S,G,C,P,KNEEL
         self.grenade_data = np.zeros((10, 4), dtype=np.float64)  # separate array for grenades (slots 48-54 in world_data)
         self.grenade_data[:8, 0] = 1  # default selected grenade type: frag
         self.grenade_data[:8, 1] = config.FRAG_GRENADE_COUNT
@@ -139,6 +146,11 @@ class Server:
         self.PLAYER_HITBOX_H = float(getattr(config, 'PLAYER_HITBOX_HEIGHT', 40.0))
         self.PLAYER_HALF_W = self.PLAYER_HITBOX_W * 0.5
         self.PLAYER_HALF_H = self.PLAYER_HITBOX_H * 0.5
+        self.KNEEL_HEIGHT_DELTA = float(getattr(config, 'KNEEL_HEIGHT_DELTA', 5.0))
+        self.KNEEL_HALF_H = max(2.0, self.PLAYER_HALF_H - (self.KNEEL_HEIGHT_DELTA * 0.5))
+        self.KNEEL_SPEED_MULTIPLIER = float(getattr(config, 'KNEEL_SPEED_MULTIPLIER', 0.6))
+        self.player_is_kneeling = np.zeros(8, dtype=bool)
+        self.player_half_h = np.full(8, self.PLAYER_HALF_H, dtype=np.float64)
         self.GROUND_Y = self.SCREEN_H - self.PLAYER_HALF_H
         self.GRAVITY = config.GRAVITY
         
@@ -148,18 +160,29 @@ class Server:
         self.FUEL_CONSUMPTION = config.FUEL_CONSUMPTION
         self.FUEL_RECHARGE = config.FUEL_RECHARGE
         self.JETPACK_THRUST = config.JETPACK_THRUST
+        self.KNEEL_JUMP_IMPULSE = float(getattr(config, 'KNEEL_JUMP_IMPULSE', 3.0))
+        self.KNEEL_GROUND_TOLERANCE = float(getattr(config, 'KNEEL_GROUND_TOLERANCE', 1.5))
         
         # Use column 6 (info) to store fuel for tanks
         self.world_data[:8, 6] = self.player_fuel
 
         # Health and score per tank
         self.MAX_HEALTH = config.MAX_HEALTH
+        self.HEALTH_REGEN_ENABLED = bool(getattr(config, 'HEALTH_REGEN_ENABLED', False))
+        self.HEALTH_REGEN_PER_SECOND = float(getattr(config, 'HEALTH_REGEN_PER_SECOND', 0.0))
         self.RESPAWN_DELAY = getattr(config, 'RESPAWN_DELAY', 5.0)
         self.world_data[:8, 7] = self.MAX_HEALTH  # health
         self.world_data[:8, 8] = 0.0  # score
 
         # Weapon system - player inventories with dual gun support
-        self.player_inventories = [PlayerInventory(starting_weapon_id=config.DEFAULT_STARTING_WEAPON) for _ in range(8)]
+        secondary_default = getattr(config, 'DEFAULT_SECONDARY_WEAPON', 2)
+        self.player_inventories = [
+            PlayerInventory(
+                starting_weapon_id=config.get_random_starting_weapon(),
+                secondary_weapon_id=secondary_default,
+            )
+            for _ in range(8)
+        ]
         
         # Fire rate cooldown per player (in seconds, tracks time since last shot)
         self.player_fire_cooldown = np.zeros(8, dtype=np.float64)
@@ -167,7 +190,7 @@ class Server:
         # Reload cooldown per player (in seconds, tracks time remaining for reload)
         self.player_reload_cooldown = np.zeros(8, dtype=np.float64)
         # Track previous frame's input state for edge detection
-        self.previous_inputs = np.zeros((8, 12), dtype=np.int32)
+        self.previous_inputs = np.zeros((8, 14), dtype=np.int32)
         self.last_frame_time = time.time()
         
         # Collision map system - grid-based obstacles
@@ -186,6 +209,11 @@ class Server:
         self.gun_spawner = GunSpawner()
         self.gun_spawner.initialize_map(self.current_map_name)
         
+        # Initialize medkit spawner system
+        self.medkit_spawner = MedkitSpawner()
+        self.medkit_spawner.set_collision_map(self.collision_map, self.GRID_SIZE, self.GRID_W, self.GRID_H)
+        self.medkit_spawner.initialize_map(self.current_map_name)
+        
         # Update screen dimensions based on loaded map
         self.SCREEN_W = self.GRID_W * self.GRID_SIZE
         self.SCREEN_H = self.GRID_H * self.GRID_SIZE
@@ -196,6 +224,73 @@ class Server:
         
         # Convert map to bytes for transmission
         self.collision_map_bytes = self.collision_map.tobytes()
+
+    def _record_player_death(self, victim_idx, killer_idx=None):
+        """Register one death and optional kill attribution, then schedule respawn."""
+        if self.world_data[victim_idx, 0] != 1:
+            return False
+
+        self.player_stats[victim_idx, 1] += 1
+
+        if killer_idx is not None and 0 <= killer_idx < 8 and killer_idx != victim_idx:
+            self.player_stats[killer_idx, 0] += 1
+            self.world_data[killer_idx, 8] = float(self.player_stats[killer_idx, 0])
+
+        self.world_data[victim_idx, 7] = 0
+        self.respawn(victim_idx, delay=self.RESPAWN_DELAY)
+        return True
+
+    def _apply_damage_to_player(self, victim_idx, damage, killer_idx=None):
+        """Apply damage and attribute kill to attacker only if this is the lethal hit."""
+        if self.world_data[victim_idx, 0] != 1:
+            return False
+        if damage <= 0:
+            return False
+
+        self.world_data[victim_idx, 7] -= float(damage)
+        if self.world_data[victim_idx, 7] <= 0:
+            return self._record_player_death(victim_idx, killer_idx)
+        return False
+
+    def _apply_health_regeneration(self, delta_time):
+        """Apply slow linear health regeneration to alive players."""
+        if not self.HEALTH_REGEN_ENABLED:
+            return
+        if self.HEALTH_REGEN_PER_SECOND <= 0.0:
+            return
+
+        regen_amount = self.HEALTH_REGEN_PER_SECOND * float(delta_time)
+        if regen_amount <= 0.0:
+            return
+
+        for idx in range(8):
+            if self.world_data[idx, 0] != 1:
+                continue
+
+            health = self.world_data[idx, 7]
+            if health <= 0.0 or health >= self.MAX_HEALTH:
+                continue
+
+            self.world_data[idx, 7] = min(self.MAX_HEALTH, health + regen_amount)
+
+    def _build_leaderboard_array(self):
+        """Return top-5 leaderboard rows: [player_idx, kills, deaths, kills_minus_deaths]."""
+        rows = []
+        for idx in range(8):
+            kills = int(self.player_stats[idx, 0])
+            deaths = int(self.player_stats[idx, 1])
+            kd_delta = kills - deaths
+            name = self.player_names[idx].strip() if idx < len(self.player_names) else ""
+            include = bool(name) or self.world_data[idx, 0] != 0 or kills > 0 or deaths > 0
+            if include:
+                rows.append((idx, kills, deaths, kd_delta))
+
+        rows.sort(key=lambda r: (-r[1], -r[3], r[0]))
+
+        board = np.full((5, 4), -1, dtype=np.int32)
+        for i, row in enumerate(rows[:5]):
+            board[i] = np.array(row, dtype=np.int32)
+        return board
 
     def _rebuild_spawn_candidates(self):
         """Collect valid standable points from map collision tiles."""
@@ -326,12 +421,20 @@ class Server:
                     return True
         return False
 
-    def is_player_colliding_with_obstacle(self, x, y):
-        return self.is_rect_colliding_with_obstacle(x, y, self.PLAYER_HALF_W, self.PLAYER_HALF_H)
+    def _get_player_half_h(self, player_idx):
+        if player_idx is None:
+            return self.PLAYER_HALF_H
+        return float(self.player_half_h[player_idx])
 
-    def _push_player_out_of_obstacle(self, x, y, push_x=0.0, push_y=0.0):
+    def _get_target_half_h(self, kneeling):
+        return self.KNEEL_HALF_H if kneeling else self.PLAYER_HALF_H
+
+    def is_player_colliding_with_obstacle(self, x, y, player_idx=None):
+        return self.is_rect_colliding_with_obstacle(x, y, self.PLAYER_HALF_W, self._get_player_half_h(player_idx))
+
+    def _push_player_out_of_obstacle(self, x, y, player_idx=None, push_x=0.0, push_y=0.0):
         """Try to move a player rectangle out of terrain using short directional nudges."""
-        if not self.is_player_colliding_with_obstacle(x, y):
+        if not self.is_player_colliding_with_obstacle(x, y, player_idx):
             return x, y
 
         directions = []
@@ -347,7 +450,7 @@ class Server:
             for dx, dy in directions:
                 test_x = x + dx * distance
                 test_y = y + dy * distance
-                if not self.is_player_colliding_with_obstacle(test_x, test_y):
+                if not self.is_player_colliding_with_obstacle(test_x, test_y, player_idx):
                     return test_x, test_y
         return x, y
 
@@ -355,10 +458,11 @@ class Server:
         """Distance from point to nearest point on player's rectangle hitbox."""
         cx = self.world_data[player_idx, 1]
         cy = self.world_data[player_idx, 2]
+        half_h = self._get_player_half_h(player_idx)
         left = cx - self.PLAYER_HALF_W
         right = cx + self.PLAYER_HALF_W
-        top = cy - self.PLAYER_HALF_H
-        bottom = cy + self.PLAYER_HALF_H
+        top = cy - half_h
+        bottom = cy + half_h
         nearest_x = max(left, min(px, right))
         nearest_y = max(top, min(py, bottom))
         return float(np.hypot(px - nearest_x, py - nearest_y))
@@ -366,9 +470,10 @@ class Server:
     def _point_hits_player_hitbox(self, px, py, player_idx, padding=0.0):
         cx = self.world_data[player_idx, 1]
         cy = self.world_data[player_idx, 2]
+        half_h = self._get_player_half_h(player_idx)
         return (
             (cx - self.PLAYER_HALF_W - padding) <= px <= (cx + self.PLAYER_HALF_W + padding)
-            and (cy - self.PLAYER_HALF_H - padding) <= py <= (cy + self.PLAYER_HALF_H + padding)
+            and (cy - half_h - padding) <= py <= (cy + half_h + padding)
         )
 
     def _push_out_of_obstacle(self, x, y, radius, push_x=0.0, push_y=0.0):
@@ -495,8 +600,9 @@ class Server:
         self.world_data[grenade_slot, 4] = vx
         self.world_data[grenade_slot, 5] = vy
     
-    def find_ground_below(self, x, y):
+    def find_ground_below(self, x, y, player_idx=None):
         """Find standable center-y below a player rectangle centered at (x, y)."""
+        half_h = self._get_player_half_h(player_idx)
         left_x = x - self.PLAYER_HALF_W
         right_x = x + self.PLAYER_HALF_W
         min_grid_x = max(0, int(np.floor(left_x / self.GRID_SIZE)))
@@ -505,14 +611,14 @@ class Server:
         if min_grid_x > max_grid_x:
             return None
 
-        feet_y = y + self.PLAYER_HALF_H
+        feet_y = y + half_h
         start_grid_y = int(np.floor(feet_y / self.GRID_SIZE))
         if start_grid_y < 0:
             start_grid_y = -1
 
         for gy in range(start_grid_y + 1, self.GRID_H):
             if np.any(self.collision_map[gy, min_grid_x:max_grid_x + 1] == 0):
-                return gy * self.GRID_SIZE - self.PLAYER_HALF_H
+                return gy * self.GRID_SIZE - half_h
 
         return None
     
@@ -535,9 +641,12 @@ class Server:
         return offsets.get(weapon_id, (0, 0))
     
     def get_extended_game_state(self):
-        """Package world_data, gun spawns, player inventories, gas effects, and grenade data for client"""
+        """Package world_data, gun spawns, medkit spawns, player inventories, gas effects, and grenade data for client"""
         # Gun spawn data: [[x, y, weapon_id, is_active], ...]
         spawn_data = self.gun_spawner.get_spawn_data_for_client()
+        
+        # Medkit spawn data: [[x, y, is_active], ...]
+        medkit_data = self.medkit_spawner.get_spawn_data_for_client()
         
         # Player inventory data: [[gun1_id, gun2_id, current_slot], ...] for 8 players
         inventory_data = np.zeros((8, 3), dtype=np.int32)
@@ -565,7 +674,38 @@ class Server:
         # Grenade data per player: [selected_type, frag_count, proxy_count, gas_count]
         grenade_data = self.grenade_data[:8].copy()
         
-        return self.world_data, spawn_data, inventory_data, gas_data, grenade_data
+        return self.world_data, spawn_data, medkit_data, inventory_data, gas_data, grenade_data
+
+    def _update_player_kneel_states(self):
+        """Apply kneel input and resize active player hitboxes by 10px in height."""
+        for i in range(8):
+            if self.world_data[i, 0] == 0:
+                self.player_is_kneeling[i] = False
+                self.player_half_h[i] = self.PLAYER_HALF_H
+                continue
+
+            wants_kneel = self.player_inputs[i, 13] == 1
+            if wants_kneel == self.player_is_kneeling[i]:
+                continue
+
+            x = self.world_data[i, 1]
+            y = self.world_data[i, 2]
+            old_half_h = self.player_half_h[i]
+            new_half_h = self._get_target_half_h(wants_kneel)
+
+            # Keep feet level when toggling stance by adjusting center y.
+            feet_y = y + old_half_h
+            new_y = feet_y - new_half_h
+
+            if self.is_rect_colliding_with_obstacle(x, new_y, self.PLAYER_HALF_W, new_half_h):
+                # Prevent standing up inside a ceiling.
+                if not wants_kneel:
+                    continue
+                new_y = y
+
+            self.player_is_kneeling[i] = wants_kneel
+            self.player_half_h[i] = new_half_h
+            self.world_data[i, 2] = new_y
 
     def run_game(self):
         MAX_BULLET_DIST = config.MAX_BULLET_DISTANCE
@@ -585,6 +725,23 @@ class Server:
             current_time = time.time()
             delta_time = current_time - self.last_frame_time
             self.last_frame_time = current_time
+
+            # Match timer
+            if self.match_start_time is None:
+                # Timer hasn't started yet - skip timer logic
+                self.time_remaining = self.match_duration
+            else:
+                elapsed = current_time - self.match_start_time
+                self.time_remaining = max(0.0, self.match_duration - elapsed)
+                if self.time_remaining <= 0:
+                    self.time_remaining = 0
+                    if not self.match_ended:
+                        leaderboard_data = self._build_leaderboard_array()
+                        print("[SERVER] Match ended")
+                        print("Leaderboard:", leaderboard_data)
+                        self.match_ended = True
+                    # freeze gameplay
+                    continue
             # Decrement grenade cooldowns
             self.player_grenade_cooldown = np.maximum(0, self.player_grenade_cooldown - delta_time)
             
@@ -598,9 +755,16 @@ class Server:
                     if self.player_respawn_cooldown[idx] <= 0:
                         self.player_respawn_cooldown[idx] = 0
                         self.respawn(idx, delay=0)  # instant respawn after timer expires
+
+            self._apply_health_regeneration(delta_time)
             
-            # Tank movement: left/right using A/D keys (index 1=A, 2=D)
-            horizontal_move = (self.player_inputs[:, 2] - self.player_inputs[:, 1]) * self.world_data[:8, 4]
+            self._update_player_kneel_states()
+
+            # Tank movement: left/right using A/D keys (index 1=A, 2=D).
+            # Kneeling reduces movement speed.
+            movement_speed = self.world_data[:8, 4].copy()
+            movement_speed[self.player_is_kneeling] *= self.KNEEL_SPEED_MULTIPLIER
+            horizontal_move = (self.player_inputs[:, 2] - self.player_inputs[:, 1]) * movement_speed
             # --- Grenade physics and fuse update ---
             if not hasattr(self, 'grenade_fuse_timers'):
                 self.grenade_fuse_timers = {}
@@ -621,13 +785,13 @@ class Server:
 
                         if g in self.grenade_fuse_timers and self.grenade_fuse_timers[g] <= 0:
                             # explode
+                            owner = int(self.world_data[g, 9])
                             for t in range(8):
                                 if self.world_data[t, 0] == 1:
                                     distance = self._distance_point_to_player_hitbox(gx, gy, t)
                                     if distance < blast_radius:
-                                        self.world_data[t, 7] -= self.grenade_damage(distance, max_damage=damage, radius=blast_radius)
-                                        if self.world_data[t, 7] <= 0:
-                                            self.respawn(t, delay=self.RESPAWN_DELAY)
+                                        dealt = self.grenade_damage(distance, max_damage=damage, radius=blast_radius)
+                                        self._apply_damage_to_player(t, dealt, killer_idx=owner)
                             self.world_data[g, 0] = 0
                             del self.grenade_fuse_timers[g]
                             if hasattr(self, 'grenade_stuck_frames'):
@@ -659,13 +823,13 @@ class Server:
                                             detonated = True
                                             break
                                 if detonated:
+                                    owner = int(self.world_data[g, 9])
                                     for t in range(8):
                                         if self.world_data[t, 0] == 1:
                                             distance = self._distance_point_to_player_hitbox(gx, gy, t)
                                             if distance < blast_radius:
-                                                self.world_data[t, 7] -= self.grenade_damage(distance, max_damage=damage, radius=blast_radius)
-                                                if self.world_data[t, 7] <= 0:
-                                                    self.respawn(t, delay=self.RESPAWN_DELAY)
+                                                dealt = self.grenade_damage(distance, max_damage=damage, radius=blast_radius)
+                                                self._apply_damage_to_player(t, dealt, killer_idx=owner)
                                     self.world_data[g, 0] = 0
                                     self.proxy_armed.discard(g)
                                     self.grenade_fuse_timers.pop(g, None)
@@ -710,12 +874,10 @@ class Server:
                     if self.world_data[t, 0] == 1:
                         distance = self._distance_point_to_player_hitbox(effect['x'], effect['y'], t)
                         if distance < effect['radius']:
-                            self.world_data[t, 7] -= (effect['damage'] / max(distance, 1.0))
-                            
-                            # Check if player died
-                            if self.world_data[t, 7] <= 0:
+                            dealt = (effect['damage'] / max(distance, 1.0))
+                            killer = int(effect.get('owner_id', -1))
+                            if self._apply_damage_to_player(t, dealt, killer_idx=killer):
                                 print(f"[SERVER] Player {t} killed by gas grenade")
-                                self.respawn(t, delay=self.RESPAWN_DELAY)
                 
                 # Remove effect if duration expired
                 if effect['duration'] <= 0:
@@ -733,8 +895,8 @@ class Server:
                 new_x = old_x + horizontal_move[i]
                 
                 # Check if currently colliding
-                currently_colliding = self.is_player_colliding_with_obstacle(old_x, self.world_data[i, 2])
-                will_collide = self.is_player_colliding_with_obstacle(new_x, self.world_data[i, 2])
+                currently_colliding = self.is_player_colliding_with_obstacle(old_x, self.world_data[i, 2], i)
+                will_collide = self.is_player_colliding_with_obstacle(new_x, self.world_data[i, 2], i)
                 
                 # Only accept horizontal movement when destination is non-colliding.
                 if not will_collide:
@@ -783,7 +945,21 @@ class Server:
             for i in range(8):
                 if self.world_data[i, 0] == 0:  # skip inactive players
                     continue
-                if jetpack_active[i] and self.player_fuel[i] > 0:
+
+                if self.player_is_kneeling[i]:
+                    # While kneeling, disable flying. Only allow a small jump on W press.
+                    if jetpack_active[i] and self.previous_inputs[i, 0] == 0:
+                        ground_y = self.find_ground_below(self.world_data[i, 1], self.world_data[i, 2], i)
+                        on_ground = (
+                            ground_y is not None
+                            and abs(self.world_data[i, 2] - ground_y) <= self.KNEEL_GROUND_TOLERANCE
+                            and self.player_vy[i] >= 0
+                        )
+                        if on_ground:
+                            self.player_vy[i] = -self.KNEEL_JUMP_IMPULSE
+                    # Recharge fuel while kneeling.
+                    self.player_fuel[i] = min(self.MAX_FUEL, self.player_fuel[i] + self.FUEL_RECHARGE)
+                elif jetpack_active[i] and self.player_fuel[i] > 0:
                     # Apply upward thrust
                     self.player_vy[i] -= self.JETPACK_THRUST
                     # Consume fuel
@@ -806,7 +982,7 @@ class Server:
                 
                 # Check collision with obstacles below
                 if self.player_vy[i] > 0:  # falling down
-                    ground_y = self.find_ground_below(self.world_data[i, 1], old_y)
+                    ground_y = self.find_ground_below(self.world_data[i, 1], old_y, i)
                     if ground_y is not None and new_y >= ground_y:
                         self.world_data[i, 2] = ground_y
                         self.player_vy[i] = 0
@@ -814,8 +990,8 @@ class Server:
                         self.world_data[i, 2] = new_y
                 else:  # moving up
                     # Check collision when moving up
-                    currently_colliding = self.is_player_colliding_with_obstacle(self.world_data[i, 1], old_y)
-                    will_collide = self.is_player_colliding_with_obstacle(self.world_data[i, 1], new_y)
+                    currently_colliding = self.is_player_colliding_with_obstacle(self.world_data[i, 1], old_y, i)
+                    will_collide = self.is_player_colliding_with_obstacle(self.world_data[i, 1], new_y, i)
                     
                     if not will_collide:
                         # Only allow upward movement into free space.
@@ -823,19 +999,21 @@ class Server:
                     else:
                         self.player_vy[i] = 0
             
-            # clamp horizontal position to screen
-            self.world_data[:8, 1] = np.clip(self.world_data[:8, 1], self.PLAYER_HALF_W, self.SCREEN_W - self.PLAYER_HALF_W)
-            # clamp vertical position only at top; bottom is handled by fall death.
-            self.world_data[:8, 2] = np.maximum(self.world_data[:8, 2], self.PLAYER_HALF_H)
-
-            # Players that fall out below the map die and immediately respawn.
-            fall_kill_y = self.SCREEN_H + self.PLAYER_HALF_H
+            # Clamp players to the world bounds using their active hitbox height.
             for i in range(8):
                 if self.world_data[i, 0] == 0:
                     continue
+                half_h = self._get_player_half_h(i)
+                self.world_data[i, 1] = np.clip(self.world_data[i, 1], self.PLAYER_HALF_W, self.SCREEN_W - self.PLAYER_HALF_W)
+                self.world_data[i, 2] = max(self.world_data[i, 2], half_h)
+
+            # Players that fall out below the map die and immediately respawn.
+            for i in range(8):
+                if self.world_data[i, 0] == 0:
+                    continue
+                fall_kill_y = self.SCREEN_H + self._get_player_half_h(i)
                 if self.world_data[i, 2] > fall_kill_y:
-                    self.world_data[i, 7] = 0
-                    self.respawn(i, delay=self.RESPAWN_DELAY)
+                    self._record_player_death(i, killer_idx=i)
 
             # Resolve any tank that is still embedded in terrain.
             for i in range(8):
@@ -844,20 +1022,20 @@ class Server:
 
                 x = self.world_data[i, 1]
                 y = self.world_data[i, 2]
-                if not self.is_player_colliding_with_obstacle(x, y):
+                if not self.is_player_colliding_with_obstacle(x, y, i):
                     self.player_stuck_frames[i] = 0
                     continue
 
                 # Try a local push-out first to preserve nearby position.
                 push_x = horizontal_move[i]
                 push_y = -1.0 if self.player_vy[i] >= 0 else self.player_vy[i]
-                x, y = self._push_player_out_of_obstacle(x, y, push_x=push_x, push_y=push_y)
+                x, y = self._push_player_out_of_obstacle(x, y, player_idx=i, push_x=push_x, push_y=push_y)
                 x = float(np.clip(x, self.PLAYER_HALF_W, self.SCREEN_W - self.PLAYER_HALF_W))
-                y = float(np.clip(y, self.PLAYER_HALF_H, self.SCREEN_H - self.PLAYER_HALF_H))
+                y = float(np.clip(y, self._get_player_half_h(i), self.SCREEN_H - self._get_player_half_h(i)))
                 self.world_data[i, 1] = x
                 self.world_data[i, 2] = y
 
-                if self.is_player_colliding_with_obstacle(x, y):
+                if self.is_player_colliding_with_obstacle(x, y, i):
                     self.player_stuck_frames[i] += 1
                     if self.player_stuck_frames[i] > 10:
                         spawn_x, spawn_y = self._get_safe_spawn_position()
@@ -883,6 +1061,39 @@ class Server:
                     self.world_data[b, 1] += np.cos(self.world_data[b, 3]) * self.world_data[b, 4]
                     self.world_data[b, 2] += np.sin(self.world_data[b, 3]) * self.world_data[b, 4]
                     self.world_data[b, 5] += self.world_data[b, 4]
+
+                    # Check screen boundary reflection first
+                    new_x, new_y = self.world_data[b, 1], self.world_data[b, 2]
+                    reflected = False
+
+                    # Left boundary (x <= 0)
+                    if new_x <= 0:
+                        self.world_data[b, 3] = np.pi - self.world_data[b, 3]  # Reflect horizontally
+                        self.world_data[b, 1] = -new_x  # Bounce back
+                        reflected = True
+
+                    # Right boundary (x >= SCREEN_W)
+                    elif new_x >= self.SCREEN_W:
+                        self.world_data[b, 3] = np.pi - self.world_data[b, 3]  # Reflect horizontally
+                        self.world_data[b, 1] = 2 * self.SCREEN_W - new_x  # Bounce back
+                        reflected = True
+
+                    # Top boundary (y <= 0)
+                    if new_y <= 0:
+                        self.world_data[b, 3] = -self.world_data[b, 3]  # Reflect vertically
+                        self.world_data[b, 2] = -new_y  # Bounce back
+                        reflected = True
+
+                    # Bottom boundary (y >= SCREEN_H)
+                    elif new_y >= self.SCREEN_H:
+                        self.world_data[b, 3] = -self.world_data[b, 3]  # Reflect vertically
+                        self.world_data[b, 2] = 2 * self.SCREEN_H - new_y  # Bounce back
+                        reflected = True
+
+                    # If reflected, update position with new angle
+                    if reflected:
+                        self.world_data[b, 1] = old_x + np.cos(self.world_data[b, 3]) * self.world_data[b, 4]
+                        self.world_data[b, 2] = old_y + np.sin(self.world_data[b, 3]) * self.world_data[b, 4]
 
                     if self.world_data[b, 5] > self.world_data[b, 4]:
                         new_x, new_y = self.world_data[b, 1], self.world_data[b, 2]
@@ -927,15 +1138,12 @@ class Server:
                                     continue
                                 distance = self._distance_point_to_player_hitbox(sx, sy, t)
                                 if distance < SAW_EXPLOSION_RADIUS:
-                                    self.world_data[t, 7] -= self.grenade_damage(
+                                    dealt = self.grenade_damage(
                                         distance,
                                         max_damage=SAW_EXPLOSION_DAMAGE,
                                         radius=SAW_EXPLOSION_RADIUS
                                     )
-                                    if self.world_data[t, 7] <= 0:
-                                        if 0 <= owner < 8:
-                                            self.world_data[owner, 8] += 1
-                                        self.respawn(t, delay=self.RESPAWN_DELAY)
+                                    self._apply_damage_to_player(t, dealt, killer_idx=owner)
                             self.world_data[b, 0] = 0
                             self.saw_bullet_timers.pop(b, None)
                     else:
@@ -944,6 +1152,11 @@ class Server:
                         #explodes on any collision player or wall, so check walls first then player collisions
                         sx, sy = self.world_data[b, 1], self.world_data[b, 2]
                         owner = int(self.world_data[b, 9])
+                        
+                        # Check for screen boundary collision
+                        screen_hit = False
+                        if sx <= 0 or sx >= self.SCREEN_W or sy <= 0 or sy >= self.SCREEN_H:
+                            screen_hit = True
                         
                         # Check for wall collision along path
                         steps = 5
@@ -971,24 +1184,21 @@ class Server:
                             if player_hit:
                                 break
                         # Apply AoE explosion damage
-                        if wall_hit or player_hit:
+                        if wall_hit or player_hit or screen_hit:
                             for t in range(8):
                                 if self.world_data[t, 0] == 0:
                                     continue
                                 distance = self._distance_point_to_player_hitbox(sx, sy, t)
                                 if distance < config.ROCKET_EXPLOSION_RADIUS:
-                                    self.world_data[t, 7] -= self.grenade_damage(
+                                    dealt = self.grenade_damage(
                                         distance,
                                         max_damage=config.ROCKET_EXPLOSION_DAMAGE,
                                         radius=config.ROCKET_EXPLOSION_RADIUS
                                     )
-                                    if self.world_data[t, 7] <= 0:
-                                        if 0 <= owner < 8:
-                                            self.world_data[owner, 8] += 1
-                                        self.respawn(t, delay=self.RESPAWN_DELAY)
+                                    self._apply_damage_to_player(t, dealt, killer_idx=owner)
                         
                         # Deactivate rocket if it hit something
-                        if wall_hit or player_hit:
+                        if wall_hit or player_hit or screen_hit:
                             self.world_data[b, 0] = 0
 
             # Deactivate bullets based on the firing weapon's effective range.
@@ -1011,14 +1221,40 @@ class Server:
             self.gun_spawner.update(delta_time)
             
             # Check for gun pickups
+            # Gun pickup using P key (input index 12)
+            # Gun pickup using P key (index 12) - only on press, not while held
+            for i in range(8):
+                if self.world_data[i, 0] == 1:
+                    if self.player_inputs[i, 12] == 1 and self.previous_inputs[i, 12] == 0:
+
+                        player_x = self.world_data[i, 1]
+                        player_y = self.world_data[i, 2]
+
+                        spawn_index = self.gun_spawner.get_nearby_gun(player_x, player_y)
+
+                        if spawn_index is not None:
+                            weapon_id = self.gun_spawner.pickup_gun(spawn_index)
+
+                            if weapon_id is not None:
+                                self.player_inventories[i].pickup_gun(weapon_id)
+                                      
+            # Update medkit spawner
+            self.medkit_spawner.update(delta_time)
+            
+            # Check for medkit pickups
             for i in range(8):
                 if self.world_data[i, 0] == 1:  # Player is alive
+                    # Do not consume medkits when already at full health.
+                    if self.world_data[i, 7] >= self.MAX_HEALTH:
+                        continue
+
                     player_x = self.world_data[i, 1]
                     player_y = self.world_data[i, 2]
-                    picked_weapon_id = self.gun_spawner.check_pickup(player_x, player_y)
-                    if picked_weapon_id is not None:
-                        self.player_inventories[i].pickup_gun(picked_weapon_id)
-            
+                    picked_medkit = self.medkit_spawner.check_pickup(player_x, player_y)
+                    if picked_medkit:
+                        # Heal player to full health
+                        self.world_data[i, 7] = self.MAX_HEALTH
+                                
             # Update reload cooldowns and complete reloads when finished
             for i in range(8):
                 if self.player_reload_cooldown[i] > 0:
@@ -1183,19 +1419,12 @@ class Server:
                     if self._point_hits_player_hitbox(bx, by, t, padding=2.0):
                         if bullet_weapon_id == SAW_WEAPON_ID:
                             # Saw projectile pierces and kills everything it touches.
-                            self.world_data[t, 7] = 0
-                            if 0 <= owner < 8:
-                                self.world_data[owner, 8] += 1
-                            self.respawn(t, delay=self.RESPAWN_DELAY)
+                            self._record_player_death(t, killer_idx=owner)
                             continue
                         else:
                             # Normal hit - apply damage once and consume bullet.
-                            self.world_data[t, 7] -= damage
+                            self._apply_damage_to_player(t, damage, killer_idx=owner)
                             bullet_hit = True
-                            if self.world_data[t, 7] <= 0:
-                                if 0 <= owner < 8:
-                                    self.world_data[owner, 8] += 1
-                                self.respawn(t, delay=self.RESPAWN_DELAY)
                             break
                 
                 # remove bullet after processing all potential hits
@@ -1254,6 +1483,15 @@ class Server:
         self.world_data[tank_index, 1] = spawn_x
         self.world_data[tank_index, 2] = spawn_y
         self.world_data[tank_index, 0] = 1  # mark as alive
+        secondary_default = getattr(config, 'DEFAULT_SECONDARY_WEAPON', 2)
+        self.player_inventories[tank_index] = PlayerInventory(
+            starting_weapon_id=config.get_random_starting_weapon(),
+            secondary_weapon_id=secondary_default,
+        )
+        if hasattr(self, 'player_is_kneeling'):
+            self.player_is_kneeling[tank_index] = False
+        if hasattr(self, 'player_half_h'):
+            self.player_half_h[tank_index] = self.PLAYER_HALF_H
         # reset vertical velocity
         if hasattr(self, 'player_vy'):
             self.player_vy[tank_index] = 0
@@ -1296,60 +1534,97 @@ class Server:
             
 
     def player_handler(self, conn, player_id):
-        data = conn.recv(16)
-        name = data.decode("utf-8")
-        print("[LOG]", name, "connected to the server.")
+        try:
+            data = conn.recv(16)
+            name = data.decode("utf-8").strip("\x00")
+            self.player_names[player_id] = name
+            print("[LOG]", name, "connected to the server.")
 
-        conn.send(int(player_id).to_bytes(4, byteorder='little'))
-        
-        # Send collision map dimensions and data
-        map_info = np.array([self.GRID_W, self.GRID_H, self.GRID_SIZE], dtype=np.int32)
-        conn.send(map_info.tobytes())
-        conn.send(self.collision_map_bytes)
-        
-        self.world_data[player_id, 0] = 1
-        self.respawn(player_id, delay=0)  # instant spawn when joining game
+            conn.send(int(player_id).to_bytes(4, byteorder='little'))
 
-        while True:
-            data = conn.recv(16)  # allow for up to 16 bytes (12 bools = 12 bytes, but allow extra)
-            if not data:
-                self.world_data[player_id, 0] = 0
-                if hasattr(self, 'player_vy'):
-                    self.player_vy[player_id] = 0
-                break
+            # Send collision map dimensions and data
+            map_info = np.array([self.GRID_W, self.GRID_H, self.GRID_SIZE], dtype=np.int32)
+            conn.send(map_info.tobytes())
+            conn.send(self.collision_map_bytes)
 
-            player_input = np.frombuffer(data, dtype=bool)
-            # Robustly pad or truncate to 12 inputs
-            if len(player_input) < 12:
-                padded_input = np.zeros(12, dtype=bool)
-                padded_input[:len(player_input)] = player_input
-                player_input = padded_input
-            elif len(player_input) > 12:
-                player_input = player_input[:12]
-            self.player_inputs[player_id] = player_input.astype(int)
+            self.world_data[player_id, 0] = 1
+            self.respawn(player_id, delay=0)  # instant spawn when joining game
 
-            # Prepare extended game state
-            world_data, spawn_data, inventory_data, gas_data, grenade_data = self.get_extended_game_state()
+            # Start match timer when first player connects
+            if self.match_start_time is None:
+                self.match_start_time = time.time()
+                print("[SERVER] Match timer started - first player connected")
 
-            # Send all data with explicit length header for robust client parsing
-            world_bytes = world_data.tobytes()
-            spawn_bytes = spawn_data.tobytes()
-            gas_bytes = gas_data.tobytes()
-            grenade_bytes = grenade_data.tobytes()
-            inventory_bytes = inventory_data.tobytes()
-            header_bytes = np.array([len(spawn_bytes), len(gas_bytes), len(grenade_bytes)], dtype=np.int32).tobytes()
+            while True:
+                data = conn.recv(16)  # allow for up to 16 bytes (14 bools = 14 bytes, with headroom)
+                if not data:
+                    break
 
-            # Packet layout:
-            # [world_data float64 fixed size]
-            # [header int32*3 -> spawn_len, gas_len, grenade_len]
-            # [spawn_data bytes]
-            # [gas_data bytes]
-            # [grenade_data bytes]
-            # [inventory_data int32 fixed size]
-            conn.sendall(world_bytes + header_bytes + spawn_bytes + gas_bytes + grenade_bytes + inventory_bytes)
+                player_input = np.frombuffer(data, dtype=bool)
+                # Robustly pad or truncate to 14 inputs.
+                if len(player_input) < 14:
+                    padded_input = np.zeros(14, dtype=bool)
+                    padded_input[:len(player_input)] = player_input
+                    player_input = padded_input
+                elif len(player_input) > 14:
+                    player_input = player_input[:14]
+                self.player_inputs[player_id] = player_input.astype(int)
+
+                # Prepare extended game state
+                world_data, spawn_data, medkit_data, inventory_data, gas_data, grenade_data = self.get_extended_game_state()
+                leaderboard_data = self._build_leaderboard_array()
+
+                # Send all data with explicit length header for robust client parsing
+                world_bytes = world_data.tobytes()
+                spawn_bytes = spawn_data.tobytes()
+                medkit_bytes = medkit_data.tobytes()
+                gas_bytes = gas_data.tobytes()
+                grenade_bytes = grenade_data.tobytes()
+                inventory_bytes = inventory_data.tobytes()
+                leaderboard_bytes = leaderboard_data.tobytes()
+                header_bytes = np.array(
+                    [len(spawn_bytes), len(medkit_bytes), len(gas_bytes), len(grenade_bytes), len(leaderboard_bytes), 8],
+                    dtype=np.int32
+                ).tobytes()
+                names_bytes = ("|".join(self.player_names)).encode()
+                names_bytes = names_bytes.ljust(128, b'\x00')
+                timer_bytes = np.array([self.time_remaining], dtype=np.float64).tobytes()
+
+                # Packet layout:
+                # [world_data float64 fixed size]
+                # [header int32*5 -> spawn_len, medkit_len, gas_len, grenade_len, leaderboard_len]
+                # [spawn_data bytes]
+                # [medkit_data bytes]
+                # [gas_data bytes]
+                # [grenade_data bytes]
+                # [inventory_data int32 fixed size]
+                # [names bytes fixed size]
+                # [leaderboard_data int32 variable size]
+                conn.sendall(
+                    world_bytes
+                    + header_bytes
+                    + spawn_bytes
+                    + medkit_bytes
+                    + gas_bytes
+                    + grenade_bytes
+                    + inventory_bytes
+                    + names_bytes
+                    + leaderboard_bytes
+                    + timer_bytes
+                )
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass
+        finally:
+            self.world_data[player_id, 0] = 0
+            if hasattr(self, 'player_vy'):
+                self.player_vy[player_id] = 0
+            self.player_names[player_id] = ""
+            try:
+                conn.close()
+            except OSError:
+                pass
 
 
             
-
 a = Server()
 print("program concluded")

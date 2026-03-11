@@ -2,7 +2,7 @@
 import pygame
 import random
 from config import *
-from game_config import *
+from ..core.game_config import *
 
 class GameMap:
     def __init__(self, grid_data):

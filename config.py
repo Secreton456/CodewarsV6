@@ -7,32 +7,41 @@ All game parameters in one place for easy tuning and balancing
 # NETWORK SETTINGS
 # =============================================================================
 SERVER_PORT = 5555
-SERVER_HOST = "192.168.56.1"  # Change to your server IP
+SERVER_HOST = "10.51.16.132" # Change to your server IP
 
 # =============================================================================
 # MAP SETTINGS
 # =============================================================================
 MAP_OPTIONS = ["catacombs", "outpost"]
-ACTIVE_MAP_INDEX = 0  # 0=catacombs, 1=outpost
+ACTIVE_MAP_INDEX = 0 # 0=catacombs, 1=outpost
 DEFAULT_MAP = MAP_OPTIONS[ACTIVE_MAP_INDEX]
 GRID_SIZE = 16  # Each grid cell is 16x16 pixels
+
+# =============================================================================
+# MATCH SETTINGS
+# =============================================================================
+MATCH_DURATION = 180.0   # seconds 
 
 # =============================================================================
 # PLAYER/TANK SETTINGS
 # =============================================================================
 # Movement
 TANK_SPEED = 3.0
+KNEEL_SPEED_MULTIPLIER = 0.1  # Movement speed multiplier while kneeling
 TANK_ROTATION_SPEED = 0.04
 TANK_VISUAL_RADIUS = 7.5
 TANK_COLLISION_RADIUS = 6  # Smaller to prevent getting stuck
-PLAYER_HITBOX_WIDTH = 40.0
-PLAYER_HITBOX_HEIGHT = 40.0
+PLAYER_HITBOX_WIDTH = 30.0
+PLAYER_HITBOX_HEIGHT = 45.0
+KNEEL_HEIGHT_DELTA = 15.0  # Reduce active player height by 5 while kneeling
 
 # Aiming
-AIM_ROTATION_SPEED = 0.08  # Radians per frame
+AIM_ROTATION_SPEED = 0.04  # Radians per frame (reduced for smoother keyboard aiming)
 
 # Health
 MAX_HEALTH = 200.0
+HEALTH_REGEN_ENABLED = True
+HEALTH_REGEN_PER_SECOND = 2.0  # Slow linear regeneration for alive players
 
 # --- Local multi-client setup ---
 
@@ -45,8 +54,7 @@ BOT_SCRIPTS = [
     "random_bot",
     "random_bot",
     "random_bot",
-    "debug_bot",
-    "debug_bot2"
+    "debug_bot"
 ]
 
 # If no keyboard player, first script bot renders
@@ -55,6 +63,10 @@ RENDER_FIRST_BOT = True
 # Colors
 PLAYER_COLOR = (255, 0, 0)  # Red for other players
 SELF_COLOR = (0, 0, 255)    # Blue for yourself
+
+# Debug rendering
+SHOW_DEBUG_HITBOX = False
+DEBUG_HITBOX_ALPHA = 90
 
 # =============================================================================
 # PHYSICS SETTINGS
@@ -66,13 +78,14 @@ MAX_FUEL = 100.0
 FUEL_CONSUMPTION = 0.5      # Fuel consumed per frame when active
 FUEL_RECHARGE = 0.5         # Fuel recharged per frame when inactive
 JETPACK_THRUST = 0.8        # Upward velocity applied
+KNEEL_JUMP_IMPULSE = 5.0    # Small one-tap jump strength while kneeling (no flight)
 
 # =============================================================================
 # BULLET SETTINGS
 # =============================================================================
 BULLET_SPEED = 10.0
 MAX_BULLET_DISTANCE = 1200  # Max travel distance before deactivation
-BULLET_VISUAL_RADIUS = 5
+BULLET_VISUAL_RADIUS = 100
 
 # =============================================================================
 # GUN WEAPON STATS
@@ -82,7 +95,7 @@ BULLET_VISUAL_RADIUS = 5
 WEAPON_STATS = {
     0: {
         "name": "AK47",
-        "damage": 20,
+        "damage": 45,
         "accuracy": 4,
         "reload_time": 2.5,
         "melee": 30,
@@ -94,10 +107,11 @@ WEAPON_STATS = {
         "ammo_given": 250,
         "sprite_file": "ak47.png",
         "bullet_speed": 60,
+        "scope": 4.0,
     },
     1: {
         "name": "Desert Eagle",
-        "damage": 8,
+        "damage": 20,
         "accuracy": 2,
         "reload_time": 1.5,
         "melee": 15,
@@ -109,10 +123,11 @@ WEAPON_STATS = {
         "ammo_given": 75,
         "sprite_file": "Minieagle.png",
         "bullet_speed": 70,
+        "scope": 2.0,
     },
     2: {
         "name": "Golden Deagle",
-        "damage": 10,
+        "damage": 30,
         "accuracy": 2,
         "reload_time": 1.5,
         "melee": 25,
@@ -124,10 +139,11 @@ WEAPON_STATS = {
         "ammo_given": 75,
         "sprite_file": "gdeagle.png",
         "bullet_speed": 70,
+        "scope": 4.0,
     },
     3: {
         "name": "M14",
-        "damage": 36,
+        "damage": 100,
         "accuracy": 0,
         "reload_time": 3,
         "melee": 35,
@@ -135,6 +151,7 @@ WEAPON_STATS = {
         "effective_range": 1200,
         "dual_wielding": False,
         "rate_of_fire": 0.55,
+        "scope": 4.0,
         "magazine_capacity": 6,
         "ammo_given": 36,
         "sprite_file": "M14.png",
@@ -142,7 +159,7 @@ WEAPON_STATS = {
     },
     4: {
         "name": "M4",
-        "damage": 17,
+        "damage": 40,
         "accuracy": 2,
         "reload_time": 2.5,
         "melee": 30,
@@ -154,6 +171,7 @@ WEAPON_STATS = {
         "ammo_given": 300,
         "sprite_file": "M4.png",
         "bullet_speed": 75,
+        "scope": 5.0,
     },
     5: {
         "name": "M93BA Sniper",
@@ -169,6 +187,7 @@ WEAPON_STATS = {
         "ammo_given": 20,
         "sprite_file": "Sniper.png",
         "bullet_speed": 100,
+        "scope": 7.0,
     },
     6: {
         "name": "Magnum",
@@ -184,10 +203,11 @@ WEAPON_STATS = {
         "ammo_given": 36,
         "sprite_file": "magnum.png",
         "bullet_speed": 75,
+        "scope": 2.0,
     },
     7: {
         "name": "MP5",
-        "damage": 7,
+        "damage": 25,
         "accuracy": 5,
         "reload_time": 2,
         "melee": 30,
@@ -199,10 +219,11 @@ WEAPON_STATS = {
         "ammo_given": 400,
         "sprite_file": "mp5.png",
         "bullet_speed": 65,
+        "scope": 4.0,
     },
     8: {
         "name": "UZI",
-        "damage": 7,
+        "damage": 25,
         "accuracy": 6,
         "reload_time": 1.8,
         "melee": 20,
@@ -214,10 +235,11 @@ WEAPON_STATS = {
         "ammo_given": 400,
         "sprite_file": "Uzi.png",
         "bullet_speed": 60,
+        "scope": 4.0,
     },
     9: {
         "name": "TEC9",
-        "damage": 10,
+        "damage": 25,
         "accuracy": 4,
         "reload_time": 1.8,
         "melee": 25,
@@ -229,10 +251,11 @@ WEAPON_STATS = {
         "ammo_given": 400,
         "sprite_file": "Tec-9.png",
         "bullet_speed": 65,
+        "scope": 4.0,
     },
     10: {
         "name": "SPAS-12",
-        "damage": 50,
+        "damage": 75,
         "accuracy": 10,
         "reload_time": 3.5,
         "melee": 40,
@@ -244,6 +267,7 @@ WEAPON_STATS = {
         "ammo_given": 24,
         "sprite_file": "Shotgun.png",
         "bullet_speed": 55,
+        "scope": 2.0,
     },
     11: {
         "name": "SAW",
@@ -259,6 +283,7 @@ WEAPON_STATS = {
         "ammo_given": 6,
         "sprite_file": "saw.png",
         "bullet_speed": 3.0,
+        "scope": 4.0,
     },
     12: {
         "name": "TAVOR",
@@ -274,6 +299,7 @@ WEAPON_STATS = {
         "ammo_given": 200,
         "sprite_file": "tavor.png",
         "bullet_speed": 70,
+        "scope": 5.0,
     },
     13: {
         "name": "XM8",
@@ -289,6 +315,7 @@ WEAPON_STATS = {
         "ammo_given": 200,
         "sprite_file": "XM8.png",
         "bullet_speed": 72,
+        "scope": 5.0,
     },
     14: {
         "name": "MINIGUN",
@@ -304,6 +331,7 @@ WEAPON_STATS = {
         "ammo_given": 200,
         "sprite_file": "minigun.png",
         "bullet_speed": 68,
+        "scope": 4.0,
     },
     15: {
         "name": "ROCKET_LAUNCHER",
@@ -319,16 +347,30 @@ WEAPON_STATS = {
         "ammo_given": 12,
         "sprite_file": "rocket_launcher.png",
         "bullet_speed": 3.0,
+        "scope": 6.0,
     },
 }
 
 # =============================================================================
 # GUN SPAWN SYSTEM
 # =============================================================================
-GUN_SPAWN_INTERVAL = 15.0    # Seconds before gun respawns
+GUN_SPAWN_INTERVAL = 30    # Seconds before gun respawns
 GUN_PICKUP_RADIUS = 20.0     # Distance to pick up gun
 MAX_GUNS_PER_PLAYER = 2      # Inventory size
 DEFAULT_STARTING_WEAPON = 1  # Desert Eagle
+DEFAULT_SECONDARY_WEAPON = 2  # Golden Deagle (slot 2)
+GUN_SPAWN_APPEAR_CHANCE = 0.5  # Chance that a gun spawn appears when a spawn attempt happens
+GUN_SPAWN_ACTIVE_LIFETIME = 60.0  # Seconds before an unpicked gun despawns
+
+# Starting weapon pool: (weapon_id, weight) — weights are relative probabilities
+# id 1 = Desert Eagle (40%), id 8 = Uzi (30%), id 9 = Tec-9 (30%)
+STARTING_WEAPON_POOL = [(1, 40), (8, 30), (9, 30)]
+
+def get_random_starting_weapon():
+    """Return a random starting weapon ID according to STARTING_WEAPON_POOL weights."""
+    import random
+    ids, weights = zip(*STARTING_WEAPON_POOL)
+    return random.choices(ids, weights=weights, k=1)[0]
 
 # =============================================================================
 # GRENADE DATA
@@ -368,6 +410,28 @@ GUN_SPAWN_POINTS = {
 }
 
 # =============================================================================
+# MEDKIT SPAWN SETTINGS
+# =============================================================================
+MEDKIT_SPAWN_INTERVAL = 10.0 # Time before medkit respawns (in seconds)
+MEDKIT_PICKUP_RADIUS = 20.0  # Distance to pick up medkit
+MEDKIT_SPAWN_APPEAR_CHANCE = 0.4 # Chance that a medkit spawn appears when a spawn attempt happens
+MEDKIT_SPAWN_ACTIVE_LIFETIME = 60.0  # Seconds before an unpicked medkit despawns
+
+# Medkit spawn locations per map
+# Format: (x, y)
+MEDKIT_SPAWN_POINTS = {
+    "catacombs": [
+        (250, 250),   # Left area
+        (450, 300),   # Center area
+        (700, 250),   # Right area
+    ],
+    
+    # Add more maps here
+    # "arena": [...],
+    # "open": [...],
+}
+
+# =============================================================================
 # RENDERING SETTINGS
 # =============================================================================
 GAME_FPS = 30              # Client FPS
@@ -384,9 +448,9 @@ GUN_SPAWN_SCALE = 25                   # Size of spawned gun (matching player si
 
 # Projectile / grenade visual sizes
 BULLET_VISUAL_SIZE = 6
-SAW_BULLET_VISUAL_SIZE = 12
+SAW_BULLET_VISUAL_SIZE = 20
 GRENADE_VISUAL_SIZE = 10
-PROXY_GRENADE_VISUAL_SIZE = 14
+PROXY_GRENADE_VISUAL_SIZE = 20
 
 # =============================================================================
 # INPUT INDICES

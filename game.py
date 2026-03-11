@@ -5,15 +5,16 @@ import numpy as np
 import os
 from client import Network
 import time
-from weapons import WEAPONS, get_grenade
-from weapon_renderer import WeaponRenderer
-from weapon_effects import WeaponEffectsManager
+from engine.weapons.weapons import WEAPONS, get_grenade
+from engine.weapons.weapon_renderer import WeaponRenderer
+from engine.weapons.weapon_effects import WeaponEffectsManager
 import config
-from scripts.bot import Bot
+from scripts.core.bot import Bot
+from engine.audio.audio_manager import AudioManager
+import random
 
 class PlayerClient:
     def __init__(self, script_name=None, render=True, W=800, H=600):
-
         self.render_enabled = render
 
         # ---- Only initialize pygame window in main thread ----
@@ -22,8 +23,11 @@ class PlayerClient:
             pygame.display.set_caption("PyTanks")
             self.font = pygame.font.SysFont(None, 24)
             self.hud_font = pygame.font.SysFont(None, 38)
+            self.leaderboard_font = pygame.font.SysFont(None, 28)
 
         self.name = script_name if script_name is not None else "Keyboard"
+        self.kneel_active = False
+        self.leaderboard_data = np.zeros((0, 4), dtype=np.int32)
         self.join_server()
 
         # ---- Input provider ----
@@ -72,7 +76,27 @@ class PlayerClient:
             self.prev_bullets = {}
             self.prev_ammo = {}
             self.prev_grenades = {}
+            self.prev_alive = np.ones(8, dtype=bool)  # Track previous alive states
 
+
+            # Initialize audio system
+            self.audio = AudioManager()
+
+            # Load weapon sounds using weapon IDs
+            weapon_sound_ids = [0,1,2,3,4,5,7,8,9,10,11,12,13,14]
+
+            # Load grenade sounds
+            self.audio.load_sound("grenade_throw", "grenade_throw.wav", volume=0.7)
+            self.audio.load_sound("grenade_explode", "grenade_explode.wav", volume=0.8)
+
+            # Load death sounds
+            for i in range(1, 10):
+                self.audio.load_sound(f"death{i}", f"death{i}.wav", volume=0.7)
+
+            for wid in weapon_sound_ids:
+                self.audio.load_sound(wid, f"{wid}.wav", volume=0.6)
+
+            self.audio.play_music("bgm.mp3", volume=0.3, loop=True)
         self.run_game()
 
         if self.render_enabled:
@@ -195,7 +219,7 @@ class PlayerClient:
         else:
             clock = None
 
-        keyboard_input = np.zeros(10, dtype=bool)
+        keyboard_input = np.zeros(14, dtype=bool)
 
         while self.running:
             if self.render_enabled:
@@ -210,21 +234,44 @@ class PlayerClient:
                         self.running = False
                     elif event.type == pygame.VIDEORESIZE:
                         self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_k:
+                        self.kneel_active = not self.kneel_active
 
             result = self.server.send(keyboard_input)
 
-            if result is None or result[0] is None:
-                self.running = False
-                break
+            if result is None:
+                continue
 
-            # Unpack result (now includes gas_data + grenade_data)
-            if len(result) == 5:
+            # Unpack result (includes player names and leaderboard data)
+            if len(result) == 9:
+                game_world, gun_spawns, medkit_spawns, inventory_data, gas_data, grenade_data, player_names, leaderboard_data, time_remaining = result
+                self.player_names = player_names
+                self.leaderboard_data = leaderboard_data
+                self.player_names = player_names
+                self.leaderboard_data = leaderboard_data
+                self.time_remaining = time_remaining
+            elif len(result) == 8:
+                game_world, gun_spawns, medkit_spawns, inventory_data, gas_data, grenade_data, player_names, leaderboard_data = result
+                self.player_names = player_names
+                self.leaderboard_data = leaderboard_data
+                self.player_names = player_names
+                self.leaderboard_data = leaderboard_data
+            elif len(result) == 7:
+                game_world, gun_spawns, medkit_spawns, inventory_data, gas_data, grenade_data, player_names = result
+                self.player_names = player_names
+                self.leaderboard_data = np.zeros((0, 4), dtype=np.int32)
+            elif len(result) == 6:
                 game_world, gun_spawns, inventory_data, gas_data, grenade_data = result
+                medkit_spawns = []
+                self.player_names = [""] * 8
+                self.leaderboard_data = np.zeros((0, 4), dtype=np.int32)
             elif len(result) == 3:
-                # Fallback for older server (backward compatibility)
                 game_world, gun_spawns, inventory_data = result
+                medkit_spawns = []
                 gas_data = np.zeros((0, 4), dtype=np.float64)
                 grenade_data = np.zeros((8, 4), dtype=np.float64)
+                self.player_names = [""] * 8
+                self.leaderboard_data = np.zeros((0, 4), dtype=np.int32)
             else:
                 self.running = False
                 break
@@ -233,15 +280,26 @@ class PlayerClient:
                 self.input_provider.update_state(
                     game_world,
                     gun_spawns,
+                    medkit_spawns,
+                    grenade_data,
                     inventory_data,
                     self.collision_map,
-                    self.grid_size
+                    self.grid_size,
+                    gas_data,
+                    leaderboard_data=self.leaderboard_data,
+                    time_remaining=getattr(self, 'time_remaining', None)
                 )
-                keyboard_input = self.input_provider.get_action()
+                keyboard_input = np.asarray(self.input_provider.get_action(), dtype=bool)
+                if len(keyboard_input) < 14:
+                    padded_input = np.zeros(14, dtype=bool)
+                    padded_input[:len(keyboard_input)] = keyboard_input
+                    keyboard_input = padded_input
+                elif len(keyboard_input) > 14:
+                    keyboard_input = keyboard_input[:14]
             else:
-                keyboard_input = np.zeros(12, dtype=bool)
+                keyboard_input = np.zeros(14, dtype=bool)
                 keys = pygame.key.get_pressed()
-                # [W=jetpack, A=left, D=right, UP=aim up, DOWN=aim down, LEFT=aim left, RIGHT=aim right, SPACE=shoot, R=reload, S=switch gun, G=grenade, C=change grenade type]
+                # [W=jetpack, A=left, D=right, UP=aim up, DOWN=aim down, LEFT=aim left, RIGHT=aim right, SPACE=shoot, R=reload, S=switch gun, G=grenade, C=change grenade type, P=pickup, K=kneel toggle state]
 
                 if keys[pygame.K_w]: keyboard_input[0] = 1
                 if keys[pygame.K_a]: keyboard_input[1] = 1
@@ -255,6 +313,8 @@ class PlayerClient:
                 if keys[pygame.K_s]: keyboard_input[9] = 1
                 if keys[pygame.K_g]: keyboard_input[10] = 1
                 if keys[pygame.K_c]: keyboard_input[11] = 1
+                if keys[pygame.K_p]: keyboard_input[12] = 1
+                if self.kneel_active: keyboard_input[13] = 1
           
             # Update player weapons from inventory data
             if self.render_enabled and inventory_data is not None:
@@ -270,7 +330,7 @@ class PlayerClient:
                             current_gun_id = gun1_id
                         
                         # Update player's displayed weapon
-                        from weapons import WEAPONS
+                        from engine.weapons.weapons import WEAPONS
                         if current_gun_id in WEAPONS:
                             self.player_weapons[i] = WEAPONS[current_gun_id]
             
@@ -300,7 +360,10 @@ class PlayerClient:
                             flash_y = y + barrel_dist * np.sin(angle) + offset_y * np.sin(angle + np.pi/2)
                             
                             self.effects_manager.add_muzzle_flash(flash_x, flash_y, angle, weapon_id)
-                        
+                            
+                            #Play sound
+                            self.audio.play(weapon_id)
+                            
                         self.prev_ammo[i] = current_ammo
                 
                 # Detect bullet impacts (when bullets disappear)
@@ -324,17 +387,31 @@ class PlayerClient:
                 for g in range(48, 55):
                     if game_world[g, 0] == 1:
                         active_grenades[g] = (game_world[g, 1], game_world[g, 2], int(game_world[g, 10]))
+                
+                # Detect grenade throws
+                for g_id in active_grenades:
+                    if g_id not in self.prev_grenades:
+                        self.audio.play("grenade_throw")
+                
+                # Detect player deaths and play random death sound
+                for i in range(8):
+                    is_alive = game_world[i, 0] == 1
+                    if self.prev_alive[i] and not is_alive:
+                        # Player just died - play random death sound
+                        death_sound = f"death{random.randint(1, 9)}"
+                        self.audio.play(death_sound)
+                    self.prev_alive[i] = is_alive
 
                 for g_id, (prev_x, prev_y, grenade_type) in self.prev_grenades.items():
                     if g_id not in active_grenades:
                         self.effects_manager.add_grenade_explosion(prev_x, prev_y, grenade_type)
-
+                        self.audio.play("grenade_explode")
                 self.prev_grenades = active_grenades
             
             if self.render_enabled:
-                self.render(game_world, gun_spawns, gas_data, grenade_data)
+                self.render(game_world, gun_spawns, medkit_spawns, gas_data, grenade_data)
 
-    def render(self, game_world, gun_spawns, gas_data, grenade_data):
+    def render(self, game_world, gun_spawns, medkit_spawns, gas_data, grenade_data):
         display_surface = self.screen
         self.screen = self.world_surface
 
@@ -348,33 +425,67 @@ class PlayerClient:
         for spawn in gun_spawns:
             x, y, weapon_id, is_active = spawn
             if is_active == 1:
-                # Draw glow effect behind gun
-                pygame.draw.circle(self.screen, config.GUN_SPAWN_GLOW_COLOR, (int(x), int(y)), 18)
-                
-                # Get and draw the gun sprite
+
                 weapon_id_int = int(weapon_id)
-                from weapons import WEAPONS
+
                 if weapon_id_int in WEAPONS:
                     weapon = WEAPONS[weapon_id_int]
                     gun_sprite = self.weapon_renderer.load_gun_sprite(weapon.sprite_file)
+
                     if gun_sprite:
-                        # Scale the gun sprite for pickup display (similar to player size)
                         gun_width = gun_sprite.get_width()
                         gun_height = gun_sprite.get_height()
+
                         target_size = config.GUN_SPAWN_SCALE
                         scale_factor = target_size / max(gun_width, gun_height)
-                        scaled_sprite = pygame.transform.scale(gun_sprite, 
-                            (int(gun_width * scale_factor), int(gun_height * scale_factor)))
-                        
-                        # Center the gun sprite at spawn location
+
+                        scaled_sprite = pygame.transform.scale(
+                            gun_sprite,
+                            (int(gun_width * scale_factor), int(gun_height * scale_factor))
+                        )
+
                         sprite_x = int(x) - scaled_sprite.get_width() // 2
                         sprite_y = int(y) - scaled_sprite.get_height() // 2
+
                         self.screen.blit(scaled_sprite, (sprite_x, sprite_y))
-                    else:
-                        # Fallback if sprite not found
-                        pygame.draw.circle(self.screen, (255, 255, 0), (int(x), int(y)), 8)
-                        text = self.font.render("G", True, (0, 0, 0))
-                        self.screen.blit(text, (int(x) - 6, int(y) - 8))
+
+                # pickup prompt
+                player_x = game_world[self.ID, 1]
+                player_y = game_world[self.ID, 2]
+
+                dist = np.sqrt((player_x - x)**2 + (player_y - y)**2)
+
+                if dist <= config.GUN_PICKUP_RADIUS:
+                    prompt = self.font.render("[P] Pick up", True, (255, 255, 255))
+                    self.screen.blit(prompt, (int(x) - 40, int(y) - 35))
+        
+        # Draw medkit spawns
+        for medkit in medkit_spawns:
+            x, y, is_active = medkit
+            if is_active == 1:
+                # Draw glow effect behind medkit
+                pygame.draw.circle(self.screen, (0, 255, 0), (int(x), int(y)), 18)  # Green glow for health
+                
+                # Try to load medkit sprite
+                try:
+                    medkit_sprite = pygame.image.load("assets/medkit/medkit.png").convert_alpha()
+                    # Scale the medkit sprite
+                    medkit_width = medkit_sprite.get_width()
+                    medkit_height = medkit_sprite.get_height()
+                    target_size = 25  # Slightly smaller than gun spawns
+                    scale_factor = target_size / max(medkit_width, medkit_height)
+                    scaled_sprite = pygame.transform.scale(medkit_sprite,
+                        (int(medkit_width * scale_factor), int(medkit_height * scale_factor)))
+                    
+                    # Center the medkit sprite at spawn location
+                    sprite_x = int(x) - scaled_sprite.get_width() // 2
+                    sprite_y = int(y) - scaled_sprite.get_height() // 2
+                    self.screen.blit(scaled_sprite, (sprite_x, sprite_y))
+                except:
+                    # Fallback: draw red cross for medkit
+                    pygame.draw.circle(self.screen, (255, 0, 0), (int(x), int(y)), 8)
+                    pygame.draw.line(self.screen, (255, 255, 255), (int(x) - 5, int(y)), (int(x) + 5, int(y)), 2)
+                    pygame.draw.line(self.screen, (255, 255, 255), (int(x), int(y) - 5), (int(x), int(y) + 5), 2)
         
         for i in range(8):
             if game_world[i, 0] == 0:
@@ -414,6 +525,34 @@ class PlayerClient:
             
             rect = sprite.get_rect(center=(px, py))
             self.screen.blit(sprite, rect.topleft)
+
+            if getattr(config, 'SHOW_DEBUG_HITBOX', False):
+                hitbox_w = int(getattr(config, 'PLAYER_HITBOX_WIDTH', 30.0))
+                hitbox_h = float(getattr(config, 'PLAYER_HITBOX_HEIGHT', 40.0))
+                kneel_delta = float(getattr(config, 'KNEEL_HEIGHT_DELTA', 5.0))
+                # Show local player's crouch hitbox height while toggled.
+                if i == self.ID and getattr(self, 'kneel_active', False):
+                    hitbox_h = max(4.0, hitbox_h - kneel_delta)
+                hitbox_h = int(hitbox_h)
+
+                overlay = pygame.Surface((hitbox_w, hitbox_h), pygame.SRCALPHA)
+                if i == self.ID:
+                    fill_color = (80, 180, 255, int(getattr(config, 'DEBUG_HITBOX_ALPHA', 90)))
+                    border_color = (80, 180, 255, 220)
+                else:
+                    fill_color = (255, 90, 90, int(getattr(config, 'DEBUG_HITBOX_ALPHA', 90)))
+                    border_color = (255, 120, 120, 220)
+                overlay.fill(fill_color)
+                pygame.draw.rect(overlay, border_color, overlay.get_rect(), 1)
+                self.screen.blit(overlay, (px - hitbox_w // 2, py - hitbox_h // 2))
+
+            # draw player name
+            if hasattr(self, "player_names"):
+                name = self.player_names[i]
+                if name:
+                    name_surface = self.font.render(name, True, (255,255,255))
+                    name_rect = name_surface.get_rect(center=(px, py - 50))
+                    self.screen.blit(name_surface, name_rect)
             
             # Draw weapon instead of aim line
             self.weapon_renderer.draw_gun(
@@ -442,46 +581,6 @@ class PlayerClient:
                 pygame.draw.rect(self.screen, (50, 50, 50), (hb_x, hb_y, hb_w, hb_h))
                 pygame.draw.rect(self.screen, (255, 0, 0), (hb_x, hb_y, int(hb_w * health_percent), hb_h))
                 pygame.draw.rect(self.screen, (255, 255, 255), (hb_x, hb_y, hb_w, hb_h), 1)
-        
-        # Draw fuel meter for local player
-        if game_world[self.ID, 0] == 1:
-            fuel = game_world[self.ID, 6]
-            fuel_percent = fuel / 100.0
-            # Draw fuel bar in top-left corner
-            bar_x, bar_y = 10, 10
-            bar_width, bar_height = 620, 52
-            # Background (empty)
-            pygame.draw.rect(self.screen, (50, 50, 50), (bar_x, bar_y, bar_width, bar_height))
-            # Fuel level (cyan color like Mini Militia)
-            fuel_width = int(bar_width * fuel_percent)
-            pygame.draw.rect(self.screen, (0, 255, 255), (bar_x, bar_y, fuel_width, bar_height))
-            # Border
-            pygame.draw.rect(self.screen, (255, 255, 255), (bar_x, bar_y, bar_width, bar_height), 2)
-
-            # Draw health bar below fuel
-            health = game_world[self.ID, 7]
-            health_percent = max(0.0, min(1.0, health / 200.0))
-            hbar_x, hbar_y = 10, bar_y + bar_height + 10
-            hbar_w, hbar_h = 620, 52
-            pygame.draw.rect(self.screen, (50, 50, 50), (hbar_x, hbar_y, hbar_w, hbar_h))
-            pygame.draw.rect(self.screen, (255, 0, 0), (hbar_x, hbar_y, int(hbar_w * health_percent), hbar_h))
-            pygame.draw.rect(self.screen, (255, 255, 255), (hbar_x, hbar_y, hbar_w, hbar_h), 2)
-
-            # Draw score at top-center (always visible)
-            score = int(game_world[self.ID, 8])
-            score_surf = self.font.render(f"Score: {score}", True, (255, 255, 255))
-            sx = self.screen.get_width() // 2 - score_surf.get_width() // 2
-            self.screen.blit(score_surf, (sx, 10))
-            
-            # Draw weapon name and ammo counter
-            weapon = self.player_weapons[self.ID]
-            weapon_name_y = hbar_y + hbar_h + 12
-            weapon_name_surf = self.hud_font.render(weapon.name, True, (255, 255, 255))
-            self.screen.blit(weapon_name_surf, (10, weapon_name_y))
-            ammo_y = weapon_name_y + 36
-            self.weapon_renderer.draw_ammo_counter(self.screen, weapon, 10, ammo_y, self.hud_font)
-            # Draw grenade counter
-            self.weapon_renderer.draw_grenade_counter(self.screen, grenade_data, self.ID, 10, ammo_y + 36, self.hud_font)
         
         # Draw bullets with trails (Mini Militia style)
         for i in range(8, 48):
@@ -549,6 +648,18 @@ class PlayerClient:
         # Draw visual effects (muzzle flashes and impacts)
         self.effects_manager.draw(self.screen)
 
+        self._draw_leaderboard()
+
+        if hasattr(self, "time_remaining"):
+            minutes = int(self.time_remaining // 60)
+            seconds = int(self.time_remaining % 60)
+
+            timer_text = f"{minutes:02}:{seconds:02}"
+            timer_surface = self.hud_font.render(timer_text, True, (255,255,255))
+
+            rect = timer_surface.get_rect(center=(self.map_width // 2, 30))
+            self.screen.blit(timer_surface, rect)
+
         self._present_frame(display_surface)
         self.screen = display_surface
 
@@ -577,8 +688,50 @@ class PlayerClient:
         display_surface.blit(viewport, (offset_x, offset_y))
         pygame.display.update()
 
+    def _draw_leaderboard(self):
+        board = getattr(self, 'leaderboard_data', None)
+        if board is None or len(board) == 0:
+            return
+
+        rows = []
+        for row in board:
+            if len(row) < 4:
+                continue
+            player_idx, kills, deaths, kd_delta = [int(v) for v in row]
+            if player_idx < 0:
+                continue
+            if hasattr(self, 'player_names') and 0 <= player_idx < len(self.player_names):
+                name = self.player_names[player_idx].strip() or f"P{player_idx}"
+            else:
+                name = f"P{player_idx}"
+            rows.append((name, kills, deaths, kd_delta))
+
+        if not rows:
+            return
+
+        padding = 12
+        line_h = 28
+        panel_w = 430
+        panel_h = 52 + (line_h * min(5, len(rows)))
+        panel_x = self.map_width - panel_w - padding
+        panel_y = padding
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((0, 0, 0, 220))
+        pygame.draw.rect(panel, (255, 255, 255, 230), panel.get_rect(), 2)
+        title = self.hud_font.render("Leaderboard (Top 5)", True, (255, 255, 255))
+        panel.blit(title, (12, 8))
+
+        for i, (name, kills, deaths, kd_delta) in enumerate(rows[:5]):
+            row_text = f"{i + 1}. {name[:14]:14}  K:{kills:2d}  D:{deaths:2d}  K-D:{kd_delta:3d}"
+            txt = self.leaderboard_font.render(row_text, True, (245, 245, 245))
+            panel.blit(txt, (12, 18 + ((i + 1) * line_h)))
+
+        self.screen.blit(panel, (panel_x, panel_y))
+
 
     def quit_game(self):
+        self.audio.stop_music()
         self.server.disconnect()
         pygame.quit()
         quit()
@@ -587,12 +740,10 @@ def launch_bot(script_name):
     PlayerClient(script_name=script_name, render=False)
 
 if __name__ == "__main__":
-
     pygame.init()
 
     threads = []
 
-    # 1️⃣ Start headless bots in background threads
     for script in config.BOT_SCRIPTS:
         t = threading.Thread(
             target=launch_bot,
@@ -602,7 +753,6 @@ if __name__ == "__main__":
         t.start()
         threads.append(t)
 
-    # 2️⃣ Run keyboard player OR first bot in MAIN thread
     if config.ENABLE_KEYBOARD_PLAYER:
         PlayerClient(script_name=None, render=True)
     else:
