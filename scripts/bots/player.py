@@ -1,51 +1,60 @@
-#player_markers gives the position
-"""
-    Helper for bots: return angle and distance to ALL active players on the map.
-    No sensor-radius or quadrant restriction — full map visibility.
 
-    Output format:
-    [
-        {"id": int, "angle": float, "distance": float},
-        ...
-    ]
-
-    angle is radians from bot -> player using atan2(dy, dx).
-    0 means right, pi/2 means down, -pi/2 means up.
-"""
-
-def run(state, memory):
+def run(state,memory):
     
-    attack_mode = True
+    t = now()
+    if memory == "":
+        last_scan = 0.0
+        frame_counter = 0
+    else:
+        try:
+            parts = memory.split("|")
+            last_scan = float(parts[0])
+            frame_counter = int(parts[1])
+        except:
+            last_scan = 0.0
+            frame_counter = 0
 
-    # Fetches the bot data
-    x, y = state.my_position()
-    health = state.my_health()
-    fuel = state.my_fuel()
-    enemy_positions = state.enemy_positions()
-    all_players = state.all_players()
-    player_markers = state.player_markers()
-    gun_spawns = state.gun_spawns()
-    medkit_spawns = state.medkit_spawns()
-    active_grenades = state.active_grenades()
-    saw_bullets_in_view = state.saw_bullets_in_view()
-    min_fight_dist = 300
+    frame_counter+=1
+    if t - last_scan >= 1.0:
 
-    if (attack_mode):
-        #Find the nearest enemy not blocked by obstacles and aim, then shoot (if in weapon range)
-        enemy = player_markers[0]
-        for opp in player_markers :
-            if opp["distance"] <= enemy["distance"]:
-                if distance_to_obstacle(opp["angle"]) > opp["distance"]:
-                    #not blocked
-                    enemy = opp
-                    #make it check if within shooting range
-                    if enemy["distance"] < min_fight_dist:
-                        #make it aim
-                        
-                    else:
-                        #make it move to the enemy
-                        pass
-                    
-                    #break it here
-                
+        print("\n=== LIDAR SCAN ===")
 
+        RAYS = 36
+        MAX_DIST = 300.0
+        GRID_SIZE = 21
+        CENTER = GRID_SIZE // 2
+
+        grid = [["." for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        grid[CENTER][CENTER] = "P"
+
+        for i in range(RAYS):
+            theta = (2 * pi() / RAYS) * i
+            d = state.distance_to_obstacle(theta)
+
+            if d > MAX_DIST:
+                d = MAX_DIST
+
+            norm = d / MAX_DIST
+
+            x = CENTER + int(cos(theta) * norm * (CENTER - 1))
+            y = CENTER + int(sin(theta) * norm * (CENTER - 1))
+
+            if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+                grid[y][x] = "#"
+
+        for row in grid:
+            print("".join(row))
+
+        board = state.leaderboard()
+        print("\nLeaderboard:")
+        for entry in board:
+            print(f"  #{entry['rank']} Player {entry['id']} - K:{entry['kills']} D:{entry['deaths']} K-D:{entry['kd_delta']}")
+
+        print("\nTime remaining:", round(state.time_remaining(), 1), "seconds")
+
+        print("==================")
+
+        last_scan = t
+
+    new_memory = f"{last_scan}|{frame_counter}"
+    return new_memory[:100]
