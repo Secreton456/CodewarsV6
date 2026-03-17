@@ -17,6 +17,7 @@ def run(state, memory):
             last_scan = 0.0
             frame_counter = 0
 
+
     # ---- 1/4 speed movement ----
     if frame_counter % 4 == 0:
         move_right()
