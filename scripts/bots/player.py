@@ -44,7 +44,7 @@ def run(state, memory):
                         
                     else:
                         #make it move to the enemy
-
+                        pass
                     
                     #break it here
                 
