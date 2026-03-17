@@ -1,60 +1,69 @@
 
 def run(state,memory):
-    
-    t = now()
-    if memory == "":
-        last_scan = 0.0
-        frame_counter = 0
-    else:
+    # Gets the time at every call
+    t = int(time.time())
+
+    # Attack_mode Boolean
+    attack_mode = True
+
+    # Fetches the bot data
+    x,y = state.my_position()
+    health = state.my_health()
+    fuel = state.my_fuel()
+    enemy_positions = state.enemy_positions()
+    gun_spawns = state.gun_spawns()
+    medkit_spawns = state.medkit_spawns()
+    active_grenades = state.active_grenades()
+    saw_bullets_in_view = state.saw_bullets_in_view()
+
+    # Initialise memory
+    '''if memory == "":
+        pass'''
+
+    # Storing Memory string as an array 
+    '''else:
         try:
             parts = memory.split("|")
             last_scan = float(parts[0])
-            frame_counter = int(parts[1])
         except:
-            last_scan = 0.0
-            frame_counter = 0
+            last_scan = 0.0'''
+    
+    # If HP goes below 60% use defensive algorithm
+    if health<=120:
+        attack_mode = False
 
-    frame_counter+=1
-    if t - last_scan >= 1.0:
 
-        print("\n=== LIDAR SCAN ===")
+    # Targeting the closest enemy in view
+    target = None
+    for enemy in enemy_positions:
+        ex,ey = enemy
+        theta = math.atan2((ey - y),(ex - x))
+        if (x-ex)**2 + (y-ey)**2 < distance_to_obstacle(theta)**2:
+            target = enemy
+        else:
+            continue
+    ex,ey = target
+    theta = math.atan2((ey - y),(ex - x))
+    if ex<x:
+        if attack_mode:
+            move_left()
+            aim_left()
+        else:
+            move_right()
+    else:
+        if attack_mode:
+            move_right()
+            aim_right()
+        else:
+            move_left()
+    if y<ey:
+        if attack_mode:
+            jetpack()
+    if y>ey:
+        if not attack_mode:
+            jetpack()
+    
 
-        RAYS = 36
-        MAX_DIST = 300.0
-        GRID_SIZE = 21
-        CENTER = GRID_SIZE // 2
-
-        grid = [["." for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-        grid[CENTER][CENTER] = "P"
-
-        for i in range(RAYS):
-            theta = (2 * pi() / RAYS) * i
-            d = state.distance_to_obstacle(theta)
-
-            if d > MAX_DIST:
-                d = MAX_DIST
-
-            norm = d / MAX_DIST
-
-            x = CENTER + int(cos(theta) * norm * (CENTER - 1))
-            y = CENTER + int(sin(theta) * norm * (CENTER - 1))
-
-            if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
-                grid[y][x] = "#"
-
-        for row in grid:
-            print("".join(row))
-
-        board = state.leaderboard()
-        print("\nLeaderboard:")
-        for entry in board:
-            print(f"  #{entry['rank']} Player {entry['id']} - K:{entry['kills']} D:{entry['deaths']} K-D:{entry['kd_delta']}")
-
-        print("\nTime remaining:", round(state.time_remaining(), 1), "seconds")
-
-        print("==================")
-
-        last_scan = t
-
-    new_memory = f"{last_scan}|{frame_counter}"
-    return new_memory[:100]
+    newmemory = ""
+    return newmemory
+    
