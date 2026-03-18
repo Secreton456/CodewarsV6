@@ -19,6 +19,9 @@ def run(state, memory):
     medkit_spawns = state.medkit_spawns()
     active_grenades = state.active_grenades()
     saw_bullets_in_view = state.saw_bullets_in_view()
+    my_gun = state.my_gun()
+    my_ammo = state.my_ammo()
+    my_aim_angle = state.my_aim_angle()
 
     # Initialise memory
     '''if memory == "":
@@ -37,47 +40,79 @@ def run(state, memory):
         attack_mode = False
 
     # Targeting the closest enemy in view
-    # ----------------------------TO ADD THIS INTO ATTACK MODE LATER ON ------------------------------- #
     if player_markers:
         target = player_markers[0]
-
+        min_distance = int(target["distance"])
         for enemy in player_markers:
             id = int(enemy["id"])
             theta = float(enemy["angle"])
             distance = int(enemy["distance"])
-
+            
             # RIGHT NOW IT CHOOSES A TARGET IN VIEW PLUS MAX TARGET ID ---> TO CHANGE IN THE NEXT COMMIT
-            if distance < state.distance_to_obstacle(theta):
+            if distance < state.distance_to_obstacle(theta) and distance<=min_distance:
                 target = enemy
+                min_distance = distance
             else:
                 continue
 
-        # Debug Mode
-        if DEBUG_MODE:
-            for enemy in player_markers:
-                print(f'id:{enemy["id"]}, angle: {enemy["angle"]}, distance: {enemy["distance"]}')
 
         id = int(target["id"])
         theta = float(target["angle"])
         distance = int(target["distance"])
 
-        # BASIC MOVEMENT AND AIMING
-        if (theta < math.pi / 2 and theta > 0) or (theta > -math.pi / 2 and theta < 0):
-            move_right()
-            aim_right()
-        else:
-            move_left()
-            aim_left()
 
-        if theta > 0:
-            jetpack()
-            aim_up()
-        else:
-            aim_down()
+        # Debug Mode
+        if DEBUG_MODE:
+            print(f"id:{id},theta:{theta},distance:{distance}")
 
-        if distance < state.distance_to_obstacle(theta):
-            shoot()
+        # Better Movement and Aiming
+        dx = distance*math.cos(theta)
+        dy = distance*math.sin(theta)
+
+        # Normalise aim_error to [-pi,pi]
+        aim_error = theta - my_aim_angle
+        if aim_error > math.pi:
+            aim_error -= 2.0 * math.pi
+        elif aim_error < -math.pi:
+            aim_error += 2.0 * math.pi
+
+        #----------------------- Check if enemy in range and attack --------------------------------
+        if attack_mode:
+            if theta<math.pi/2 and theta> -math.pi/2:
+                move_right()
+            else:
+                move_left()
+
+            if theta < 0:
+                jetpack()
+            
+            # Adjust aiming
+            if aim_error > 0.01:
+                aim_right()   
+            elif aim_error < -0.01:
+                aim_left() 
+        
+        # For defense mode go away from the attacker but still shoot
+        elif not attack_mode:
+            if theta<math.pi/2 and theta> -math.pi/2:
+                move_left()
+            else:
+                move_right()
+            
+            if theta > 0:
+                jetpack()
+
+            # Adjust aiming
+            if aim_error > 0.01:
+                aim_right()   
+            elif aim_error < -0.01:
+                aim_left() 
+        
+
     # -------------------------------------------------------------------------------------------------- #
+        if my_ammo == 0:
+            switch_weapon()
+
 
     newmemory = ""
     return newmemory
