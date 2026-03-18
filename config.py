@@ -51,9 +51,9 @@ ENABLE_KEYBOARD_PLAYER = True
 
 # List of bot script filenames (without .py)
 BOT_SCRIPTS = [
-    "random_bot",
-    "random_bot",
-    "random_bot",
+    "pro_bot",
+    "pro_bot",
+    "pro_bot",
     "pro_bot",
     "pro_bot",
     "player"
