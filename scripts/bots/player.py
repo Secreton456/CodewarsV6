@@ -62,7 +62,7 @@ def run(state, memory):
         distance = int(target["distance"])
 
         # BASIC MOVEMENT AND AIMING
-        if (theta < math.pi / 2 and theta > 0) or (theta < -math.pi / 2 and theta < 0):
+        if (theta < math.pi / 2 and theta > 0) or (theta > -math.pi / 2 and theta < 0):
             move_right()
             aim_right()
         else:
