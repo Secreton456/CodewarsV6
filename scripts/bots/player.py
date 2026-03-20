@@ -43,6 +43,7 @@ def run(state, memory):
     # Targeting the closest enemy in view
     if player_markers:
         target = player_markers[0]
+        ENEMIES_IN_VIEW =False
         min_distance = int(target["distance"])
         for enemy in player_markers:
             id = int(enemy["id"])
@@ -53,8 +54,39 @@ def run(state, memory):
             if distance < state.distance_to_obstacle(theta) and distance<=min_distance:
                 target = enemy
                 min_distance = distance
+                ENEMIES_IN_VIEW = True
+
+        #SELF-EXPLANATORY ---> If no enemies are in view we choose the closest enemy as the target
+        if not ENEMIES_IN_VIEW:
+            for enemy in player_markers:
+                id = int(enemy["id"])
+                theta = float(enemy["angle"])
+                distance = int(enemy["distance"])
+            
+            if distance<=min_distance:
+                target = enemy
+                min_distance = distance
+
+            # IF THERE ARE NO ENEMIES IN VIEW MOVE ALONG THE MOST SPACIOUS DIRECTION
+            move_angle = 0
+            spatial_distance = state.distance_to_obstacle(0)
+            for RAYCASTSTEP in range(0,35):
+                RAYCASTANGLE = 10*RAYCASTSTEP/math.pi
+                if RAYCASTANGLE >math.pi:
+                    RAYCASTANGLE-=2*math.pi
+                if spatial_distance > state.distance_to_obstacle(RAYCASTANGLE):
+                    spatial_distance = state.distance_to_obstacle(RAYCASTANGLE)
+                    move_angle = RAYCASTANGLE
+
+            if move_angle<math.pi/2 and move_angle> -math.pi/2:
+                move_right()
             else:
-                continue
+                move_left()
+            if theta<0:                    
+                jetpack()
+
+            if DEBUG_MODE:
+                print(f"spatial_distance:{spatial_distance},move_angle:{move_angle}")
 
 
         id = int(target["id"])
@@ -78,7 +110,7 @@ def run(state, memory):
             aim_error += 2.0 * math.pi
 
         #----------------------- Check if enemy in range and attack --------------------------------
-        if attack_mode:
+        if attack_mode and ENEMIES_IN_VIEW:
             if theta<math.pi/2 and theta> -math.pi/2:
                 move_right()
             else:
@@ -98,7 +130,7 @@ def run(state, memory):
                     shoot() 
         
         # For defense mode go away from the attacker but still shoot
-        elif not attack_mode:
+        elif (not attack_mode) and ENEMIES_IN_VIEW:
             if theta<math.pi/2 and theta> -math.pi/2:
                 move_left()
             else:
