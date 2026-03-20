@@ -23,6 +23,7 @@ def run(state, memory):
     my_ammo = state.my_ammo()
     my_aim_angle = state.my_aim_angle()
     MIN_FIGHT_DISTANCE = 300
+    MAX_FIGHT_DISTANCE = 600
     # Initialise memory
     '''if memory == "":
         pass'''
@@ -89,11 +90,11 @@ def run(state, memory):
             # Adjust aiming
             if aim_error > 0.01:
                 aim_right()
-                if distance<MIN_FIGHT_DISTANCE:
+                if distance<MAX_FIGHT_DISTANCE and distance<state.distance_to_obstacle(theta):
                     shoot()
             elif aim_error < -0.01:
                 aim_left()
-                if distance<MIN_FIGHT_DISTANCE:
+                if  distance<MAX_FIGHT_DISTANCE and distance<state.distance_to_obstacle(theta):
                     shoot() 
         
         # For defense mode go away from the attacker but still shoot
@@ -109,11 +110,11 @@ def run(state, memory):
             # Adjust aiming
             if aim_error > 0.01:
                 aim_right()
-                if distance<MIN_FIGHT_DISTANCE:
+                if  distance<MAX_FIGHT_DISTANCE and distance<state.distance_to_obstacle(theta):
                     shoot()   
             elif aim_error < -0.01:
                 aim_left()
-                if distance<MIN_FIGHT_DISTANCE:
+                if  distance<MAX_FIGHT_DISTANCE and distance<state.distance_to_obstacle(theta):
                     shoot() 
         
 
