@@ -25,19 +25,32 @@ def run(state, memory):
     MIN_FIGHT_DISTANCE = 300
     MAX_FIGHT_DISTANCE = 600
     # Initialise memory
-    '''if memory == "":
-        pass'''
-
+    if memory == "":
+        newmemory = 1
+        FUEL_MODE = 1
     # Storing Memory string as an array
-    '''else:
+    else:
         try:
             parts = memory.split("|")
-            last_scan = float(parts[0])
+            FUEL_MODE = int(parts[0])
         except:
-            last_scan = 0.0'''
+            FUEL_MODE = 1
 
-    # If HP goes below 60% use defensive algorithm
-    if health <= 120:
+    #FUEL CONSUMPTION MODE 1--->MEMORY
+    #FUEL RECHARGING MODE  0--->MEMORY
+    if FUEL_MODE:
+        if fuel<=1:
+            newmemory="0"
+        else:
+            newmemory="1"
+    else:
+        if fuel<=50:
+            newmemory="0"
+        else:
+            newmemory="1"
+
+
+    if health<=100:
         attack_mode = False
 
     # Targeting the closest enemy in view
@@ -55,39 +68,6 @@ def run(state, memory):
                 target = enemy
                 min_distance = distance
                 ENEMIES_IN_VIEW = True
-
-        #SELF-EXPLANATORY ---> If no enemies are in view we choose the closest enemy as the target
-        if not ENEMIES_IN_VIEW:
-            for enemy in player_markers:
-                id = int(enemy["id"])
-                theta = float(enemy["angle"])
-                distance = int(enemy["distance"])
-            
-            if distance<=min_distance:
-                target = enemy
-                min_distance = distance
-
-            # IF THERE ARE NO ENEMIES IN VIEW MOVE ALONG THE MOST SPACIOUS DIRECTION
-            move_angle = 0
-            spatial_distance = state.distance_to_obstacle(0)
-            for RAYCASTSTEP in range(0,35):
-                RAYCASTANGLE = 10*RAYCASTSTEP/math.pi
-                if RAYCASTANGLE >math.pi:
-                    RAYCASTANGLE-=2*math.pi
-                if spatial_distance > state.distance_to_obstacle(RAYCASTANGLE):
-                    spatial_distance = state.distance_to_obstacle(RAYCASTANGLE)
-                    move_angle = RAYCASTANGLE
-
-            if move_angle<math.pi/2 and move_angle> -math.pi/2:
-                move_right()
-            else:
-                move_left()
-            if theta<0:                    
-                jetpack()
-
-            if DEBUG_MODE:
-                print(f"spatial_distance:{spatial_distance},move_angle:{move_angle}")
-
 
         id = int(target["id"])
         theta = float(target["angle"])
@@ -117,7 +97,8 @@ def run(state, memory):
                 move_left()
 
             if theta < 0:
-                jetpack()
+                if FUEL_MODE:
+                    jetpack()
             
             # Adjust aiming
             if aim_error > 0.01:
@@ -130,14 +111,15 @@ def run(state, memory):
                     shoot() 
         
         # For defense mode go away from the attacker but still shoot
-        elif (not attack_mode) and ENEMIES_IN_VIEW:
+        if (not attack_mode) and ENEMIES_IN_VIEW:
             if theta<math.pi/2 and theta> -math.pi/2:
                 move_left()
             else:
                 move_right()
             
             if theta > 0:
-                jetpack()
+                if FUEL_MODE:
+                    jetpack()
 
             # Adjust aiming
             if aim_error > 0.01:
@@ -149,11 +131,43 @@ def run(state, memory):
                 if  distance<MAX_FIGHT_DISTANCE and distance<state.distance_to_obstacle(theta):
                     shoot() 
         
+        #SELF-EXPLANATORY ---> If no enemies are in view we choose the closest enemy as the target
+        if not ENEMIES_IN_VIEW:
+            for enemy in player_markers:
+                id = int(enemy["id"])
+                theta = float(enemy["angle"])
+                distance = int(enemy["distance"])
+            
+                if distance<=min_distance:
+                    target = enemy
+                    min_distance = distance
+
+            # IF THERE ARE NO ENEMIES IN VIEW MOVE ALONG THE MOST SPACIOUS DIRECTION
+            move_angle = 0
+            spatial_distance = state.distance_to_obstacle(0)
+            for RAYCASTSTEP in range(0,35):
+                RAYCASTANGLE = (2*math.pi/36)*RAYCASTSTEP
+                if RAYCASTANGLE >math.pi:
+                    RAYCASTANGLE-=2*math.pi
+                if spatial_distance < state.distance_to_obstacle(RAYCASTANGLE):
+                    spatial_distance = state.distance_to_obstacle(RAYCASTANGLE)
+                    move_angle = RAYCASTANGLE
+
+            if move_angle<math.pi/2 and move_angle> -math.pi/2:
+                move_right()
+            else:
+                move_left()
+            if theta<0:  
+                if FUEL_MODE:                  
+                    jetpack()
+
+            if DEBUG_MODE:
+                print(f"spatial_distance:{spatial_distance},move_angle:{move_angle},ENEMIES_IN_VIEW:{ENEMIES_IN_VIEW}")
+
 
     # -------------------------------------------------------------------------------------------------- #
         if my_ammo == 0:
             switch_weapon()
 
 
-    newmemory = ""
     return newmemory
