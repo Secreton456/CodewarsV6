@@ -24,9 +24,12 @@ def run(state, memory):
     my_aim_angle = state.my_aim_angle()
     MIN_FIGHT_DISTANCE = 300
     MAX_FIGHT_DISTANCE = 600
+
+
     # Initialise memory
+    # Right now memory stores only the fuel mode
     if memory == "":
-        newmemory = 1
+        newmemory = "1"
         FUEL_MODE = 1
     # Storing Memory string as an array
     else:
@@ -36,8 +39,10 @@ def run(state, memory):
         except:
             FUEL_MODE = 1
 
+
     #FUEL CONSUMPTION MODE 1--->MEMORY
     #FUEL RECHARGING MODE  0--->MEMORY
+    # If the fuel goes to zero the fuel recharges till goes upto 50 which is half the fuel
     if FUEL_MODE:
         if fuel<=1:
             newmemory="0"
@@ -50,8 +55,10 @@ def run(state, memory):
             newmemory="1"
 
 
-    if health<=100:
+    # Go defensive once health is less that 40% of total
+    if health<=80:
         attack_mode = False
+
 
     # Targeting the closest enemy in view
     if player_markers:
@@ -63,7 +70,6 @@ def run(state, memory):
             theta = float(enemy["angle"])
             distance = int(enemy["distance"])
             
-            # RIGHT NOW IT CHOOSES A TARGET IN VIEW PLUS MAX TARGET ID ---> TO CHANGE IN THE NEXT COMMIT
             if distance < state.distance_to_obstacle(theta) and distance<=min_distance:
                 target = enemy
                 min_distance = distance
@@ -89,7 +95,8 @@ def run(state, memory):
         elif aim_error < -math.pi:
             aim_error += 2.0 * math.pi
 
-        #----------------------- Check if enemy in range and attack --------------------------------
+
+        # If enemies are in view move towards the in case of attack mode else move away
         if attack_mode and ENEMIES_IN_VIEW:
             if theta<math.pi/2 and theta> -math.pi/2:
                 move_right()
@@ -165,7 +172,7 @@ def run(state, memory):
                 print(f"spatial_distance:{spatial_distance},move_angle:{move_angle},ENEMIES_IN_VIEW:{ENEMIES_IN_VIEW}")
 
 
-    # -------------------------------------------------------------------------------------------------- #
+
         if my_ammo == 0:
             switch_weapon()
 
