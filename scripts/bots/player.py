@@ -177,25 +177,30 @@ def run(state, memory):
             switch_weapon()
 
         if active_grenades:
-            gr = active_grenades[0]
-            dx = gr["x"]-x
-            dy = gr["y"]-y
+            grenades = active_grenades[0]
+            dx = grenades["x"]-x
+            dy = grenades["y"]-y
             min_distance = math.sqrt((dx)**2+(dy)**2)
             escapeangle = math.atan2(dy,dx)
-            for g in active_grenades:
-                dx = g["x"]-x
-                dy = g["y"]-y
+            for grenade in active_grenades:
+                dx = grenade["x"]-x
+                dy = grenade["y"]-y
                 distance = math.sqrt((dx)**2+(dy)**2)
                 moveangle = math.atan2(dy,dx)
                 if distance<min_distance and distance<state.distance_to_obstacle(moveangle):
                     min_distance = distance
                     escapeangle = moveangle
                 if min_distance<state.distance_to_obstacle(escapeangle):
-                    if escapeangle>0: escapeangle = escapeangle - math.pi
-                    else: escapeangle = escapeangle + math.pi
-                    if escapeangle>math.pi/4 and escapeangle<3*math.pi/4: jetpack()
-                    if escapeangle<math.pi/4 and escapeangle>(-1)*math.pi/4: move_right()
-                    if escapeangle>3*math.pi/4 and escapeangle<(-3)*math.pi/4: move_left()
+                    if escapeangle>0:
+                        escapeangle = escapeangle - math.pi
+                    else:
+                        escapeangle = escapeangle + math.pi
+                    if escapeangle>math.pi/4 and escapeangle<3*math.pi/4:
+                        jetpack()
+                    if escapeangle<math.pi/4 and escapeangle>(-1)*math.pi/4:
+                        move_right()
+                    if escapeangle>3*math.pi/4 and escapeangle<(-3)*math.pi/4:
+                        move_left()
 
 
 
